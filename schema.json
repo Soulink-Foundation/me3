@@ -337,6 +337,32 @@
       },
       "type": "object"
     },
+    "Me3Media": {
+      "additionalProperties": false,
+      "properties": {
+        "duration": {
+          "description": "Duration in seconds (optional)",
+          "type": "number"
+        },
+        "id": {
+          "description": "Provider-specific id (optional)",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider identifier (optional)",
+          "type": "string"
+        },
+        "thumbnail": {
+          "description": "Thumbnail URL (optional)",
+          "type": "string"
+        },
+        "url": {
+          "description": "Media URL (player or file)",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Me3Page": {
       "additionalProperties": false,
       "description": "me3 Protocol v0.1\n\nA protocol for portable personal websites. Your site lives in a single me.json file that you can take anywhere.",
@@ -393,13 +419,13 @@
           "description": "URL-friendly identifier",
           "type": "string"
         },
-        "type": {
-          "$ref": "#/definitions/Me3PostType",
-          "description": "Post format (optional)"
-        },
         "title": {
           "description": "Display name for listing",
           "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/Me3PostType",
+          "description": "Post format (optional)"
         }
       },
       "required": [
@@ -407,32 +433,6 @@
         "title",
         "file"
       ],
-      "type": "object"
-    },
-    "Me3Media": {
-      "additionalProperties": false,
-      "properties": {
-        "duration": {
-          "description": "Duration in seconds (optional)",
-          "type": "number"
-        },
-        "id": {
-          "description": "Provider-specific id (optional)",
-          "type": "string"
-        },
-        "provider": {
-          "description": "Provider identifier (optional)",
-          "type": "string"
-        },
-        "thumbnail": {
-          "description": "Thumbnail URL (optional)",
-          "type": "string"
-        },
-        "url": {
-          "description": "Media URL (player or file)",
-          "type": "string"
-        }
-      },
       "type": "object"
     },
     "Me3PostType": {
