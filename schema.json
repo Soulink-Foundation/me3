@@ -381,6 +381,10 @@
           "description": "Path to markdown file (relative to me.json)",
           "type": "string"
         },
+        "media": {
+          "$ref": "#/definitions/Me3Media",
+          "description": "Media payload for non-text posts (optional)"
+        },
         "publishedAt": {
           "description": "ISO publish date (optional)",
           "type": "string"
@@ -388,6 +392,10 @@
         "slug": {
           "description": "URL-friendly identifier",
           "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/Me3PostType",
+          "description": "Post format (optional)"
         },
         "title": {
           "description": "Display name for listing",
@@ -400,6 +408,43 @@
         "file"
       ],
       "type": "object"
+    },
+    "Me3Media": {
+      "additionalProperties": false,
+      "properties": {
+        "duration": {
+          "description": "Duration in seconds (optional)",
+          "type": "number"
+        },
+        "id": {
+          "description": "Provider-specific id (optional)",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Provider identifier (optional)",
+          "type": "string"
+        },
+        "thumbnail": {
+          "description": "Thumbnail URL (optional)",
+          "type": "string"
+        },
+        "url": {
+          "description": "Media URL (player or file)",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Me3PostType": {
+      "enum": [
+        "article",
+        "note",
+        "video",
+        "audio",
+        "image",
+        "link"
+      ],
+      "type": "string"
     },
     "Me3Product": {
       "additionalProperties": false,

@@ -27,12 +27,37 @@ export interface Me3Post {
   title: string;
   /** Path to markdown file (relative to me.json) */
   file: string;
+  /** Post format (optional) */
+  type?: Me3PostType;
+  /** Media payload for non-text posts (optional) */
+  media?: Me3Media;
   /** ISO publish date (optional) */
   publishedAt?: string;
   /** Short excerpt for archive/listing (optional) */
   excerpt?: string;
   /** ISO timestamp when post was sent to newsletter subscribers (optional) */
   emailedAt?: string;
+}
+
+export type Me3PostType =
+  | "article"
+  | "note"
+  | "video"
+  | "audio"
+  | "image"
+  | "link";
+
+export interface Me3Media {
+  /** Media URL (player or file) */
+  url?: string;
+  /** Duration in seconds (optional) */
+  duration?: number;
+  /** Thumbnail URL (optional) */
+  thumbnail?: string;
+  /** Provider identifier (optional) */
+  provider?: string;
+  /** Provider-specific id (optional) */
+  id?: string;
 }
 
 export interface Me3Product {
@@ -569,6 +594,14 @@ export function validateProfile(data: unknown): ValidationResult {
     if (!Array.isArray(posts)) {
       errors.push({ field: "posts", message: "Posts must be an array" });
     } else {
+      const allowedPostTypes = new Set([
+        "article",
+        "note",
+        "video",
+        "audio",
+        "image",
+        "link",
+      ]);
       posts.forEach((post: any, index: number) => {
         if (!post || typeof post !== "object") {
           errors.push({
@@ -594,6 +627,71 @@ export function validateProfile(data: unknown): ValidationResult {
             field: `posts[${index}].file`,
             message: "Post file is required",
           });
+        }
+        if (post.type !== undefined && typeof post.type !== "string") {
+          errors.push({
+            field: `posts[${index}].type`,
+            message: "Post type must be a string",
+          });
+        } else if (post.type && !allowedPostTypes.has(post.type)) {
+          errors.push({
+            field: `posts[${index}].type`,
+            message: "Post type is invalid",
+          });
+        }
+        if (post.media !== undefined) {
+          if (!post.media || typeof post.media !== "object") {
+            errors.push({
+              field: `posts[${index}].media`,
+              message: "Post media must be an object",
+            });
+          } else {
+            if (
+              post.media.url !== undefined &&
+              typeof post.media.url !== "string"
+            ) {
+              errors.push({
+                field: `posts[${index}].media.url`,
+                message: "Post media url must be a string",
+              });
+            }
+            if (
+              post.media.duration !== undefined &&
+              typeof post.media.duration !== "number"
+            ) {
+              errors.push({
+                field: `posts[${index}].media.duration`,
+                message: "Post media duration must be a number",
+              });
+            }
+            if (
+              post.media.thumbnail !== undefined &&
+              typeof post.media.thumbnail !== "string"
+            ) {
+              errors.push({
+                field: `posts[${index}].media.thumbnail`,
+                message: "Post media thumbnail must be a string",
+              });
+            }
+            if (
+              post.media.provider !== undefined &&
+              typeof post.media.provider !== "string"
+            ) {
+              errors.push({
+                field: `posts[${index}].media.provider`,
+                message: "Post media provider must be a string",
+              });
+            }
+            if (
+              post.media.id !== undefined &&
+              typeof post.media.id !== "string"
+            ) {
+              errors.push({
+                field: `posts[${index}].media.id`,
+                message: "Post media id must be a string",
+              });
+            }
+          }
         }
         if (
           post.publishedAt !== undefined &&
