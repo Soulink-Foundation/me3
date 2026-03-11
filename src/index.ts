@@ -279,6 +279,8 @@ export interface Me3Profile {
   testimonials?: Me3Testimonial[];
   /** Where testimonials should be displayed */
   testimonialDisplay?: Me3TestimonialDisplay;
+  /** Title for the testimonials section/page */
+  testimonialsTitle?: string;
   /**
    * Custom footer configuration.
    * - `undefined`: default footer behavior (renderer-defined)
@@ -886,6 +888,17 @@ export function validateProfile(data: unknown): ValidationResult {
       errors.push({
         field: "testimonialDisplay",
         message: `Testimonial display must be one of: ${VALID_TESTIMONIAL_DISPLAYS.join(", ")}`,
+      });
+    }
+  }
+
+  // Testimonials title (optional)
+  if ((profile as any).testimonialsTitle !== undefined) {
+    const title = (profile as any).testimonialsTitle;
+    if (typeof title !== "string") {
+      errors.push({
+        field: "testimonialsTitle",
+        message: "Testimonials title must be a string",
       });
     }
   }
