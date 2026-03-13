@@ -1,6 +1,6 @@
 {
   "name": "me3-protocol",
-  "version": "2.10.0",
+  "version": "2.11.0",
   "description": "",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,15 +25,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/soulink8/me3.git"
+    "url": "git+https://github.com/Soulink-Foundation/me3.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/soulink8/me3/issues"
+    "url": "https://github.com/Soulink-Foundation/me3/issues"
   },
-  "homepage": "https://github.com/soulink8/me3#readme",
+  "homepage": "https://github.com/Soulink-Foundation/me3#readme",
   "devDependencies": {
     "ts-json-schema-generator": "^2.4.0",
     "typescript": "^5.9.3"
