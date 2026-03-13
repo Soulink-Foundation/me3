@@ -2,6 +2,43 @@
   "$ref": "#/definitions/Me3Profile",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "Me3ActionDefinition": {
+      "additionalProperties": false,
+      "description": "Explicit action descriptors that agents can invoke. These make the protocol self-describing without requiring knowledge of ME3 conventions.",
+      "properties": {
+        "description": {
+          "description": "Human-readable description of what the action does",
+          "type": "string"
+        },
+        "method": {
+          "$ref": "#/definitions/Me3ActionMethod",
+          "description": "HTTP method to use"
+        },
+        "requires": {
+          "description": "Required input fields an agent must collect before invoking",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "Action endpoint URL",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "type": "object"
+    },
+    "Me3ActionMethod": {
+      "enum": [
+        "GET",
+        "POST"
+      ],
+      "type": "string"
+    },
     "Me3BookingAvailability": {
       "additionalProperties": false,
       "description": "Availability windows for booking. Defines when the person is available for meetings.",
@@ -506,6 +543,13 @@
     "Me3Profile": {
       "additionalProperties": false,
       "properties": {
+        "actions": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Me3ActionDefinition"
+          },
+          "description": "Explicit action descriptors for agent invocation",
+          "type": "object"
+        },
         "avatar": {
           "description": "Avatar URL (absolute or relative)",
           "type": "string"
@@ -578,6 +622,13 @@
           },
           "type": "array"
         },
+        "services": {
+          "description": "Structured services or offerings for agents to evaluate",
+          "items": {
+            "$ref": "#/definitions/Me3Service"
+          },
+          "type": "array"
+        },
         "testimonialDisplay": {
           "$ref": "#/definitions/Me3TestimonialDisplay",
           "description": "Where testimonials should be displayed"
@@ -588,6 +639,10 @@
             "$ref": "#/definitions/Me3Testimonial"
           },
           "type": "array"
+        },
+        "testimonialsTitle": {
+          "description": "Title for the testimonials section/page",
+          "type": "string"
         },
         "verification": {
           "$ref": "#/definitions/Me3Verification",
@@ -603,6 +658,89 @@
         "name"
       ],
       "type": "object"
+    },
+    "Me3Service": {
+      "additionalProperties": false,
+      "description": "Structured service or offering metadata. This lets agents understand who a session is for and what outcome it provides.",
+      "properties": {
+        "availabilityMode": {
+          "$ref": "#/definitions/Me3ServiceAvailabilityMode",
+          "description": "How availability is managed"
+        },
+        "currency": {
+          "description": "Currency code for the price",
+          "enum": [
+            "USD",
+            "GBP",
+            "EUR"
+          ],
+          "type": "string"
+        },
+        "description": {
+          "description": "Short service description",
+          "type": "string"
+        },
+        "duration": {
+          "description": "Duration in minutes",
+          "type": "number"
+        },
+        "id": {
+          "description": "Stable identifier for the service",
+          "type": "string"
+        },
+        "outcomes": {
+          "description": "Expected outcomes or benefits",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "price": {
+          "description": "Price in major currency units (e.g. 50 for EUR 50)",
+          "type": "number"
+        },
+        "sessionType": {
+          "description": "Delivery/session type (e.g. \"1:1\", \"group\", \"async\")",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/Me3ServiceStatus",
+          "description": "Current service status"
+        },
+        "title": {
+          "description": "Display title",
+          "type": "string"
+        },
+        "whoItsFor": {
+          "description": "Short audience descriptors",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "type": "object"
+    },
+    "Me3ServiceAvailabilityMode": {
+      "enum": [
+        "calendar",
+        "native",
+        "external",
+        "manual"
+      ],
+      "type": "string"
+    },
+    "Me3ServiceStatus": {
+      "enum": [
+        "active",
+        "paused",
+        "draft"
+      ],
+      "type": "string"
     },
     "Me3Testimonial": {
       "additionalProperties": false,

@@ -16,15 +16,36 @@ Without an authoritative source, they guess. They scrape. They get it wrong.
 
 Schema.org describes _pages_. `me.json` declares _people_—their identity, their preferences, and their **intents**.
 
-## The Solution: Intents
+## The Solution: Intents, Services, and Actions
 
-The core of `me.json` is the `intents` object—machine-readable declarations of what visitors and agents can do:
+The core of `me.json` is a machine-readable contract:
+
+- `intents` declare what is possible
+- `services` describe the offers a person provides
+- `actions` make invocation explicit for agents
+
+Example:
 
 ```json
 {
   "version": "0.1",
   "name": "Jane Doe",
   "bio": "Creative Director at Studio X",
+  "services": [
+    {
+      "id": "discovery-call",
+      "title": "Discovery Call",
+      "description": "A first conversation to explore fit.",
+      "sessionType": "1:1",
+      "duration": 30,
+      "price": 0,
+      "currency": "EUR",
+      "whoItsFor": ["founders", "coaches"],
+      "outcomes": ["clarity", "next steps"],
+      "availabilityMode": "calendar",
+      "status": "active"
+    }
+  ],
   "intents": {
     "subscribe": {
       "enabled": true,
@@ -39,13 +60,25 @@ The core of `me.json` is the `intents` object—machine-readable declarations of
       "duration": 30,
       "url": "https://cal.com/janedoe"
     }
+  },
+  "actions": {
+    "subscribe": {
+      "method": "POST",
+      "url": "https://api.example.com/subscribe",
+      "requires": ["email"]
+    },
+    "checkAvailability": {
+      "method": "GET",
+      "url": "https://api.example.com/book/janedoe/slots{?date}",
+      "requires": ["date"]
+    }
   }
 }
 ```
 
 **Without `me.json`**: An AI asked "Can I book a call with Jane?" has to guess, scrape her site, or fail.
 
-**With `me.json`**: The AI reads `intents.book`, confirms it's enabled, and knows exactly where to send the user.
+**With `me.json`**: The AI reads `intents.book`, sees the relevant `services`, and can use `actions.checkAvailability` or `actions.subscribe` directly.
 
 That's the protocol's value: **authority before action**.
 
@@ -57,6 +90,34 @@ That's the protocol's value: **authority before action**.
 | `book`      | Meeting/consultation booking | `enabled`, `title`, `description`, `url`, `duration` |
 
 More intents (like `contact` for routing preferences) are planned.
+
+## Structured Services
+
+`services` helps agents explain fit before taking action.
+
+| Field | Purpose |
+| :---- | :------ |
+| `id` | Stable identifier for the service |
+| `title` | Human-facing service name |
+| `description` | Short summary of the offer |
+| `sessionType` | Delivery type such as `1:1` or `group` |
+| `duration` | Session length in minutes |
+| `price` / `currency` | Pricing metadata |
+| `whoItsFor` | Audience descriptors |
+| `outcomes` | Expected benefits or next steps |
+| `availabilityMode` | How availability is managed |
+| `status` | Whether the service is currently active |
+
+## Explicit Actions
+
+`actions` lets a profile describe exactly how an agent should invoke something.
+
+| Field | Purpose |
+| :---- | :------ |
+| `method` | HTTP method such as `GET` or `POST` |
+| `url` | Endpoint URL |
+| `requires` | Fields an agent must gather before calling |
+| `description` | Human-readable action summary |
 
 ---
 
@@ -76,7 +137,9 @@ Beyond intents, `me.json` includes identity and presentation fields:
 | `links`    | `object` | No       | Social links (`website`, `github`, `twitter`, etc.). |
 | `buttons`  | `array`  | No       | Call-to-action buttons for human visitors.           |
 | `pages`    | `array`  | No       | Custom content pages (markdown).                     |
+| `services` | `array`  | No       | Structured services or offerings for agents.         |
 | `intents`  | `object` | No       | Machine-actionable declarations (see above).         |
+| `actions`  | `object` | No       | Explicit action descriptors for agents.              |
 | `footer`   | `object` | No       | Footer config (or `false` to hide).                  |
 
 See [`examples/full.json`](./examples/full.json) for a complete example.

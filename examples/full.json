@@ -37,6 +37,21 @@
       "excerpt": "A short welcome post for the blog."
     }
   ],
+  "services": [
+    {
+      "id": "discovery-call",
+      "title": "Discovery Call",
+      "description": "A first conversation to explore fit and next steps.",
+      "sessionType": "1:1",
+      "duration": 30,
+      "price": 0,
+      "currency": "EUR",
+      "whoItsFor": ["founders", "coaches"],
+      "outcomes": ["clarity", "next steps"],
+      "availabilityMode": "native",
+      "status": "active"
+    }
+  ],
   "intents": {
     "subscribe": {
       "enabled": true,
@@ -59,6 +74,26 @@
           "friday": ["09:00-12:00"]
         }
       }
+    }
+  },
+  "actions": {
+    "subscribe": {
+      "method": "POST",
+      "url": "https://api.me3.app/api/sites/example/subscribe",
+      "requires": ["email"],
+      "description": "Subscribe someone to this site's newsletter."
+    },
+    "checkAvailability": {
+      "method": "GET",
+      "url": "https://api.me3.app/api/book/example/slots{?date}",
+      "requires": ["date"],
+      "description": "Return available booking slots for a given date."
+    },
+    "createBooking": {
+      "method": "POST",
+      "url": "https://api.me3.app/api/book/example/confirm",
+      "requires": ["slotStart", "slotEnd", "guestName", "guestEmail"],
+      "description": "Confirm a booking for the selected slot."
     }
   }
 }

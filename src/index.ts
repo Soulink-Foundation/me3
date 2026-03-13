@@ -142,6 +142,60 @@ export interface Me3Verification {
   verifiedAt?: string;
 }
 
+export type Me3ActionMethod = "GET" | "POST";
+
+/**
+ * Explicit action descriptors that agents can invoke.
+ * These make the protocol self-describing without requiring knowledge of ME3 conventions.
+ */
+export interface Me3ActionDefinition {
+  /** HTTP method to use */
+  method: Me3ActionMethod;
+  /** Action endpoint URL */
+  url: string;
+  /** Required input fields an agent must collect before invoking */
+  requires?: string[];
+  /** Human-readable description of what the action does */
+  description?: string;
+}
+
+export type Me3ServiceAvailabilityMode =
+  | "calendar"
+  | "native"
+  | "external"
+  | "manual";
+
+export type Me3ServiceStatus = "active" | "paused" | "draft";
+
+/**
+ * Structured service or offering metadata.
+ * This lets agents understand who a session is for and what outcome it provides.
+ */
+export interface Me3Service {
+  /** Stable identifier for the service */
+  id: string;
+  /** Display title */
+  title: string;
+  /** Short service description */
+  description?: string;
+  /** Delivery/session type (e.g. "1:1", "group", "async") */
+  sessionType?: string;
+  /** Duration in minutes */
+  duration?: number;
+  /** Price in major currency units (e.g. 50 for EUR 50) */
+  price?: number;
+  /** Currency code for the price */
+  currency?: "USD" | "GBP" | "EUR";
+  /** Short audience descriptors */
+  whoItsFor?: string[];
+  /** Expected outcomes or benefits */
+  outcomes?: string[];
+  /** How availability is managed */
+  availabilityMode?: Me3ServiceAvailabilityMode;
+  /** Current service status */
+  status?: Me3ServiceStatus;
+}
+
 // ============================================================================
 // Intents - Machine-readable actions visitors can take
 // ============================================================================
@@ -275,6 +329,10 @@ export interface Me3Profile {
   posts?: Me3Post[];
   /** Products (markdown) */
   products?: Me3Product[];
+  /** Structured services or offerings for agents to evaluate */
+  services?: Me3Service[];
+  /** Explicit action descriptors for agent invocation */
+  actions?: Record<string, Me3ActionDefinition>;
   /** Testimonials / social proof */
   testimonials?: Me3Testimonial[];
   /** Where testimonials should be displayed */
@@ -330,6 +388,14 @@ const MAX_INTENT_DESCRIPTION_LENGTH = 300;
 const VALID_FREQUENCIES = ["daily", "weekly", "monthly", "irregular"];
 const VALID_CURRENCIES = ["USD", "GBP", "EUR"];
 const VALID_TESTIMONIAL_DISPLAYS = ["homepage", "standalone"];
+const VALID_ACTION_METHODS = ["GET", "POST"];
+const VALID_SERVICE_AVAILABILITY_MODES = [
+  "calendar",
+  "native",
+  "external",
+  "manual",
+];
+const VALID_SERVICE_STATUSES = ["active", "paused", "draft"];
 
 /**
  * Validate a me3 profile object
@@ -813,6 +879,226 @@ export function validateProfile(data: unknown): ValidationResult {
           });
         }
       });
+    }
+  }
+
+  // Services (optional)
+  if ((profile as any).services !== undefined) {
+    const services = (profile as any).services;
+    if (!Array.isArray(services)) {
+      errors.push({ field: "services", message: "Services must be an array" });
+    } else {
+      services.forEach((service: any, index: number) => {
+        if (!service || typeof service !== "object") {
+          errors.push({
+            field: `services[${index}]`,
+            message: "Service must be an object",
+          });
+          return;
+        }
+
+        if (!service.id || typeof service.id !== "string") {
+          errors.push({
+            field: `services[${index}].id`,
+            message: "Service id is required",
+          });
+        }
+
+        if (!service.title || typeof service.title !== "string") {
+          errors.push({
+            field: `services[${index}].title`,
+            message: "Service title is required",
+          });
+        } else if (service.title.length > MAX_INTENT_TITLE_LENGTH) {
+          errors.push({
+            field: `services[${index}].title`,
+            message: `Service title must be ${MAX_INTENT_TITLE_LENGTH} characters or less`,
+          });
+        }
+
+        if (service.description !== undefined) {
+          if (typeof service.description !== "string") {
+            errors.push({
+              field: `services[${index}].description`,
+              message: "Service description must be a string",
+            });
+          } else if (
+            service.description.length > MAX_INTENT_DESCRIPTION_LENGTH
+          ) {
+            errors.push({
+              field: `services[${index}].description`,
+              message: `Service description must be ${MAX_INTENT_DESCRIPTION_LENGTH} characters or less`,
+            });
+          }
+        }
+
+        if (
+          service.sessionType !== undefined &&
+          typeof service.sessionType !== "string"
+        ) {
+          errors.push({
+            field: `services[${index}].sessionType`,
+            message: "Service sessionType must be a string",
+          });
+        }
+
+        if (
+          service.duration !== undefined &&
+          (typeof service.duration !== "number" || service.duration <= 0)
+        ) {
+          errors.push({
+            field: `services[${index}].duration`,
+            message: "Service duration must be a positive number",
+          });
+        }
+
+        if (
+          service.price !== undefined &&
+          (typeof service.price !== "number" || service.price < 0)
+        ) {
+          errors.push({
+            field: `services[${index}].price`,
+            message: "Service price must be a non-negative number",
+          });
+        }
+
+        if (
+          service.currency !== undefined &&
+          (typeof service.currency !== "string" ||
+            !VALID_CURRENCIES.includes(service.currency))
+        ) {
+          errors.push({
+            field: `services[${index}].currency`,
+            message: `Service currency must be one of: ${VALID_CURRENCIES.join(", ")}`,
+          });
+        }
+
+        if (service.price !== undefined && service.currency === undefined) {
+          errors.push({
+            field: `services[${index}].currency`,
+            message: "Service currency is required when price is set",
+          });
+        }
+
+        if (service.whoItsFor !== undefined) {
+          if (
+            !Array.isArray(service.whoItsFor) ||
+            service.whoItsFor.some((value: any) => typeof value !== "string")
+          ) {
+            errors.push({
+              field: `services[${index}].whoItsFor`,
+              message: "Service whoItsFor must be an array of strings",
+            });
+          }
+        }
+
+        if (service.outcomes !== undefined) {
+          if (
+            !Array.isArray(service.outcomes) ||
+            service.outcomes.some((value: any) => typeof value !== "string")
+          ) {
+            errors.push({
+              field: `services[${index}].outcomes`,
+              message: "Service outcomes must be an array of strings",
+            });
+          }
+        }
+
+        if (
+          service.availabilityMode !== undefined &&
+          (typeof service.availabilityMode !== "string" ||
+            !VALID_SERVICE_AVAILABILITY_MODES.includes(
+              service.availabilityMode,
+            ))
+        ) {
+          errors.push({
+            field: `services[${index}].availabilityMode`,
+            message: `Service availabilityMode must be one of: ${VALID_SERVICE_AVAILABILITY_MODES.join(", ")}`,
+          });
+        }
+
+        if (
+          service.status !== undefined &&
+          (typeof service.status !== "string" ||
+            !VALID_SERVICE_STATUSES.includes(service.status))
+        ) {
+          errors.push({
+            field: `services[${index}].status`,
+            message: `Service status must be one of: ${VALID_SERVICE_STATUSES.join(", ")}`,
+          });
+        }
+      });
+    }
+  }
+
+  // Actions (optional)
+  if ((profile as any).actions !== undefined) {
+    const actions = (profile as any).actions;
+    if (typeof actions !== "object" || actions === null || Array.isArray(actions)) {
+      errors.push({ field: "actions", message: "Actions must be an object" });
+    } else {
+      for (const [name, action] of Object.entries(actions)) {
+        if (!action || typeof action !== "object") {
+          errors.push({
+            field: `actions.${name}`,
+            message: "Action must be an object",
+          });
+          continue;
+        }
+
+        const actionRecord = action as Record<string, unknown>;
+
+        if (
+          typeof actionRecord.method !== "string" ||
+          !VALID_ACTION_METHODS.includes(actionRecord.method)
+        ) {
+          errors.push({
+            field: `actions.${name}.method`,
+            message: `Action method must be one of: ${VALID_ACTION_METHODS.join(", ")}`,
+          });
+        }
+
+        if (!actionRecord.url || typeof actionRecord.url !== "string") {
+          errors.push({
+            field: `actions.${name}.url`,
+            message: "Action url is required",
+          });
+        } else if (!URL_REGEX.test(actionRecord.url)) {
+          errors.push({
+            field: `actions.${name}.url`,
+            message:
+              "Action url must be a valid URL starting with http:// or https://",
+          });
+        }
+
+        if (actionRecord.requires !== undefined) {
+          if (
+            !Array.isArray(actionRecord.requires) ||
+            actionRecord.requires.some((value) => typeof value !== "string")
+          ) {
+            errors.push({
+              field: `actions.${name}.requires`,
+              message: "Action requires must be an array of strings",
+            });
+          }
+        }
+
+        if (actionRecord.description !== undefined) {
+          if (typeof actionRecord.description !== "string") {
+            errors.push({
+              field: `actions.${name}.description`,
+              message: "Action description must be a string",
+            });
+          } else if (
+            actionRecord.description.length > MAX_INTENT_DESCRIPTION_LENGTH
+          ) {
+            errors.push({
+              field: `actions.${name}.description`,
+              message: `Action description must be ${MAX_INTENT_DESCRIPTION_LENGTH} characters or less`,
+            });
+          }
+        }
+      }
     }
   }
 
