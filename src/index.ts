@@ -70,7 +70,7 @@ export interface Me3Product {
   /** Product price in cents (e.g., 2999 for $29.99) */
   price: number;
   /** Currency code */
-  currency: "USD" | "GBP" | "EUR";
+  currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
   /** Product images (URLs) */
   images?: string[];
   /** Whether product is available for purchase */
@@ -185,7 +185,7 @@ export interface Me3Service {
   /** Price in major currency units (e.g. 50 for EUR 50) */
   price?: number;
   /** Currency code for the price */
-  currency?: "USD" | "GBP" | "EUR";
+  currency?: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
   /** Short audience descriptors */
   whoItsFor?: string[];
   /** Expected outcomes or benefits */
@@ -244,7 +244,7 @@ export interface Me3BookingPricing {
   /** Suggested price amount in dollars (e.g., 50 for $50) */
   suggestedAmount: number;
   /** Currency code */
-  currency: "USD" | "GBP" | "EUR";
+  currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
   /** Minimum amount bookers can pay (always $5) */
   minimumAmount: 5;
   /** Whether to allow free meetings alongside paid ones */
@@ -288,7 +288,7 @@ export interface Me3IntentShop {
   /** Shop description */
   description?: string;
   /** Shop currency */
-  currency: "USD" | "GBP" | "EUR";
+  currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
 }
 
 /**
@@ -386,7 +386,7 @@ const MAX_FOOTER_LINK_TEXT_LENGTH = 60;
 const MAX_INTENT_TITLE_LENGTH = 100;
 const MAX_INTENT_DESCRIPTION_LENGTH = 300;
 const VALID_FREQUENCIES = ["daily", "weekly", "monthly", "irregular"];
-const VALID_CURRENCIES = ["USD", "GBP", "EUR"];
+const VALID_CURRENCIES = ["USD", "GBP", "EUR", "CAD", "AUD", "CHF", "SGD", "INR", "PKR"];
 const VALID_TESTIMONIAL_DISPLAYS = ["homepage", "standalone"];
 const VALID_ACTION_METHODS = ["GET", "POST"];
 const VALID_SERVICE_AVAILABILITY_MODES = [
