@@ -196,6 +196,19 @@ export interface Me3Service {
   status?: Me3ServiceStatus;
 }
 
+/**
+ * Structured site/business context for agents and positioning.
+ * This keeps offer clarity explicit without overloading freeform bio text.
+ */
+export interface Me3BusinessContext {
+  /** Human-facing description of the ideal client or audience */
+  whoIServe?: string;
+  /** Tight target-market label for routing and positioning */
+  targetMarket?: string;
+  /** Main progress the buyer is hiring the offer to create */
+  primaryOutcome?: string;
+}
+
 // ============================================================================
 // Intents - Machine-readable actions visitors can take
 // ============================================================================
@@ -329,6 +342,8 @@ export interface Me3Profile {
   posts?: Me3Post[];
   /** Products (markdown) */
   products?: Me3Product[];
+  /** Structured site/business context for agents */
+  business?: Me3BusinessContext;
   /** Structured services or offerings for agents to evaluate */
   services?: Me3Service[];
   /** Explicit action descriptors for agent invocation */
@@ -383,6 +398,9 @@ const VALID_BUTTON_STYLES = ["primary", "secondary", "outline"];
 const URL_REGEX = /^https?:\/\/.+/i;
 const MAX_FOOTER_TEXT_LENGTH = 200;
 const MAX_FOOTER_LINK_TEXT_LENGTH = 60;
+const MAX_BUSINESS_WHO_IS_SERVE_LENGTH = 160;
+const MAX_BUSINESS_TARGET_MARKET_LENGTH = 160;
+const MAX_BUSINESS_PRIMARY_OUTCOME_LENGTH = 240;
 const MAX_INTENT_TITLE_LENGTH = 100;
 const MAX_INTENT_DESCRIPTION_LENGTH = 300;
 const VALID_FREQUENCIES = ["daily", "weekly", "monthly", "irregular"];
@@ -488,6 +506,60 @@ export function validateProfile(data: unknown): ValidationResult {
   if (profile.links !== undefined) {
     if (typeof profile.links !== "object" || profile.links === null) {
       errors.push({ field: "links", message: "Links must be an object" });
+    }
+  }
+
+  // Business context (optional)
+  if (profile.business !== undefined) {
+    if (typeof profile.business !== "object" || profile.business === null || Array.isArray(profile.business)) {
+      errors.push({
+        field: "business",
+        message: "Business context must be an object",
+      });
+    } else {
+      const business = profile.business as Record<string, unknown>;
+
+      if (business.whoIServe !== undefined) {
+        if (typeof business.whoIServe !== "string") {
+          errors.push({
+            field: "business.whoIServe",
+            message: "Business whoIServe must be a string",
+          });
+        } else if (business.whoIServe.length > MAX_BUSINESS_WHO_IS_SERVE_LENGTH) {
+          errors.push({
+            field: "business.whoIServe",
+            message: `Business whoIServe must be ${MAX_BUSINESS_WHO_IS_SERVE_LENGTH} characters or less`,
+          });
+        }
+      }
+
+      if (business.targetMarket !== undefined) {
+        if (typeof business.targetMarket !== "string") {
+          errors.push({
+            field: "business.targetMarket",
+            message: "Business targetMarket must be a string",
+          });
+        } else if (business.targetMarket.length > MAX_BUSINESS_TARGET_MARKET_LENGTH) {
+          errors.push({
+            field: "business.targetMarket",
+            message: `Business targetMarket must be ${MAX_BUSINESS_TARGET_MARKET_LENGTH} characters or less`,
+          });
+        }
+      }
+
+      if (business.primaryOutcome !== undefined) {
+        if (typeof business.primaryOutcome !== "string") {
+          errors.push({
+            field: "business.primaryOutcome",
+            message: "Business primaryOutcome must be a string",
+          });
+        } else if (business.primaryOutcome.length > MAX_BUSINESS_PRIMARY_OUTCOME_LENGTH) {
+          errors.push({
+            field: "business.primaryOutcome",
+            message: `Business primaryOutcome must be ${MAX_BUSINESS_PRIMARY_OUTCOME_LENGTH} characters or less`,
+          });
+        }
+      }
     }
   }
 

@@ -31,6 +31,11 @@ Example:
   "version": "0.1",
   "name": "Jane Doe",
   "bio": "Creative Director at Studio X",
+  "business": {
+    "whoIServe": "founders and creative operators",
+    "targetMarket": "early-stage founders",
+    "primaryOutcome": "clarity on the offer and next step"
+  },
   "services": [
     {
       "id": "discovery-call",
@@ -108,6 +113,16 @@ More intents (like `contact` for routing preferences) are planned.
 | `availabilityMode` | How availability is managed |
 | `status` | Whether the service is currently active |
 
+## Business Context
+
+`business` gives agents a compact, explicit summary of the offer they should understand before they act.
+
+| Field | Purpose |
+| :---- | :------ |
+| `whoIServe` | Human-facing description of the ideal client or audience |
+| `targetMarket` | Tight target-market label for routing and positioning |
+| `primaryOutcome` | Main progress the buyer is hiring the offer to create |
+
 ## Explicit Actions
 
 `actions` lets a profile describe exactly how an agent should invoke something.
@@ -137,6 +152,7 @@ Beyond intents, `me.json` includes identity and presentation fields:
 | `links`    | `object` | No       | Social links (`website`, `github`, `twitter`, etc.). |
 | `buttons`  | `array`  | No       | Call-to-action buttons for human visitors.           |
 | `pages`    | `array`  | No       | Custom content pages (markdown).                     |
+| `business` | `object` | No       | Compact site/business context for agents.             |
 | `services` | `array`  | No       | Structured services or offerings for agents.         |
 | `intents`  | `object` | No       | Machine-actionable declarations (see above).         |
 | `actions`  | `object` | No       | Explicit action descriptors for agents.              |
@@ -200,4 +216,4 @@ A standard JSON Schema is available at [`schema.json`](./schema.json).
 
 - **Current version**: `0.1`
 - **Stability**: Additive changes only. Breaking changes require a version bump.
-- **Extensions**: Custom fields should go under `links` until the protocol defines extension points.
+- **Extensions**: Use `business` for site/business context and `links` for lightweight presentation extensions.

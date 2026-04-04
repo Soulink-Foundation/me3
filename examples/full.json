@@ -4,6 +4,11 @@
   "handle": "example",
   "location": "City, Country",
   "bio": "Short example bio describing what this person does.",
+  "business": {
+    "whoIServe": "founders and coaches",
+    "targetMarket": "service-based founders",
+    "primaryOutcome": "a clearer offer that is easier to buy"
+  },
   "avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=example",
   "banner": "https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1200&h=400&fit=crop",
   "links": {

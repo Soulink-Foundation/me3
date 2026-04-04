@@ -149,6 +149,25 @@
       ],
       "type": "object"
     },
+    "Me3BusinessContext": {
+      "additionalProperties": false,
+      "description": "Structured site/business context for agents and positioning. This keeps offer clarity explicit without overloading freeform bio text.",
+      "properties": {
+        "primaryOutcome": {
+          "description": "Main progress the buyer is hiring the offer to create",
+          "type": "string"
+        },
+        "targetMarket": {
+          "description": "Tight target-market label for routing and positioning",
+          "type": "string"
+        },
+        "whoIServe": {
+          "description": "Human-facing description of the ideal client or audience",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Me3Button": {
       "additionalProperties": false,
       "properties": {
@@ -579,6 +598,10 @@
         "bio": {
           "description": "Short bio",
           "type": "string"
+        },
+        "business": {
+          "$ref": "#/definitions/Me3BusinessContext",
+          "description": "Structured site/business context for agents"
         },
         "buttons": {
           "description": "Call-to-action buttons (max 3)",

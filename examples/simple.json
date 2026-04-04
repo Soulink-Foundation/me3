@@ -4,6 +4,11 @@
   "handle": "janedoe",
   "location": "Remote",
   "bio": "Minimalist example.",
+  "business": {
+    "whoIServe": "independent consultants",
+    "targetMarket": "consultants",
+    "primaryOutcome": "clearer positioning"
+  },
   "links": {
     "twitter": "janedoe"
   }
