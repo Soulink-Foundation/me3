@@ -201,8 +201,14 @@ export interface Me3Service {
  * This keeps offer clarity explicit without overloading freeform bio text.
  */
 export interface Me3BusinessContext {
+  /** Full positioning sentence used as the basis for agent understanding */
+  positioningStatement?: string;
   /** Human-facing description of the ideal client or audience */
-  whoIServe?: string;
+  audience?: string;
+  /** Core pain point, blocker, or job-to-be-done */
+  primaryProblem?: string;
+  /** How the person solves the problem or delivers the offer */
+  solution?: string;
   /** Tight target-market label for routing and positioning */
   targetMarket?: string;
   /** Main progress the buyer is hiring the offer to create */
@@ -398,7 +404,10 @@ const VALID_BUTTON_STYLES = ["primary", "secondary", "outline"];
 const URL_REGEX = /^https?:\/\/.+/i;
 const MAX_FOOTER_TEXT_LENGTH = 200;
 const MAX_FOOTER_LINK_TEXT_LENGTH = 60;
-const MAX_BUSINESS_WHO_IS_SERVE_LENGTH = 160;
+const MAX_BUSINESS_POSITIONING_STATEMENT_LENGTH = 320;
+const MAX_BUSINESS_AUDIENCE_LENGTH = 160;
+const MAX_BUSINESS_PRIMARY_PROBLEM_LENGTH = 160;
+const MAX_BUSINESS_SOLUTION_LENGTH = 240;
 const MAX_BUSINESS_TARGET_MARKET_LENGTH = 160;
 const MAX_BUSINESS_PRIMARY_OUTCOME_LENGTH = 240;
 const MAX_INTENT_TITLE_LENGTH = 100;
@@ -519,30 +528,63 @@ export function validateProfile(data: unknown): ValidationResult {
     } else {
       const business = profile.business as Record<string, unknown>;
 
-      if (business.whoIServe !== undefined) {
-        if (typeof business.whoIServe !== "string") {
+      if (business.positioningStatement !== undefined) {
+        if (typeof business.positioningStatement !== "string") {
           errors.push({
-            field: "business.whoIServe",
-            message: "Business whoIServe must be a string",
+            field: "business.positioningStatement",
+            message: "Business positioningStatement must be a string",
           });
-        } else if (business.whoIServe.length > MAX_BUSINESS_WHO_IS_SERVE_LENGTH) {
+        } else if (
+          business.positioningStatement.length >
+          MAX_BUSINESS_POSITIONING_STATEMENT_LENGTH
+        ) {
           errors.push({
-            field: "business.whoIServe",
-            message: `Business whoIServe must be ${MAX_BUSINESS_WHO_IS_SERVE_LENGTH} characters or less`,
+            field: "business.positioningStatement",
+            message: `Business positioningStatement must be ${MAX_BUSINESS_POSITIONING_STATEMENT_LENGTH} characters or less`,
           });
         }
       }
 
-      if (business.targetMarket !== undefined) {
-        if (typeof business.targetMarket !== "string") {
+      if (business.audience !== undefined) {
+        if (typeof business.audience !== "string") {
           errors.push({
-            field: "business.targetMarket",
-            message: "Business targetMarket must be a string",
+            field: "business.audience",
+            message: "Business audience must be a string",
           });
-        } else if (business.targetMarket.length > MAX_BUSINESS_TARGET_MARKET_LENGTH) {
+        } else if (business.audience.length > MAX_BUSINESS_AUDIENCE_LENGTH) {
           errors.push({
-            field: "business.targetMarket",
-            message: `Business targetMarket must be ${MAX_BUSINESS_TARGET_MARKET_LENGTH} characters or less`,
+            field: "business.audience",
+            message: `Business audience must be ${MAX_BUSINESS_AUDIENCE_LENGTH} characters or less`,
+          });
+        }
+      }
+
+      if (business.primaryProblem !== undefined) {
+        if (typeof business.primaryProblem !== "string") {
+          errors.push({
+            field: "business.primaryProblem",
+            message: "Business primaryProblem must be a string",
+          });
+        } else if (
+          business.primaryProblem.length > MAX_BUSINESS_PRIMARY_PROBLEM_LENGTH
+        ) {
+          errors.push({
+            field: "business.primaryProblem",
+            message: `Business primaryProblem must be ${MAX_BUSINESS_PRIMARY_PROBLEM_LENGTH} characters or less`,
+          });
+        }
+      }
+
+      if (business.solution !== undefined) {
+        if (typeof business.solution !== "string") {
+          errors.push({
+            field: "business.solution",
+            message: "Business solution must be a string",
+          });
+        } else if (business.solution.length > MAX_BUSINESS_SOLUTION_LENGTH) {
+          errors.push({
+            field: "business.solution",
+            message: `Business solution must be ${MAX_BUSINESS_SOLUTION_LENGTH} characters or less`,
           });
         }
       }

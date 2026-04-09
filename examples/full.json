@@ -5,7 +5,10 @@
   "location": "City, Country",
   "bio": "Short example bio describing what this person does.",
   "business": {
-    "whoIServe": "founders and coaches",
+    "positioningStatement": "I help service-based founders with unclear offers by shaping a clearer offer that is easier to buy.",
+    "audience": "service-based founders",
+    "primaryProblem": "unclear offers",
+    "solution": "shaping a clearer offer that is easier to buy",
     "targetMarket": "service-based founders",
     "primaryOutcome": "a clearer offer that is easier to buy"
   },

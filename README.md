@@ -32,7 +32,10 @@ Example:
   "name": "Jane Doe",
   "bio": "Creative Director at Studio X",
   "business": {
-    "whoIServe": "founders and creative operators",
+    "positioningStatement": "I help early-stage founders with unclear positioning by turning their expertise into a sharper offer.",
+    "audience": "early-stage founders",
+    "primaryProblem": "unclear positioning",
+    "solution": "turning their expertise into a sharper offer",
     "targetMarket": "early-stage founders",
     "primaryOutcome": "clarity on the offer and next step"
   },
@@ -119,7 +122,10 @@ More intents (like `contact` for routing preferences) are planned.
 
 | Field | Purpose |
 | :---- | :------ |
-| `whoIServe` | Human-facing description of the ideal client or audience |
+| `positioningStatement` | Canonical offer sentence agents should use as source context |
+| `audience` | Human-facing description of the ideal client or audience |
+| `primaryProblem` | Core pain point, blocker, or job-to-be-done |
+| `solution` | How the offer helps or what it provides |
 | `targetMarket` | Tight target-market label for routing and positioning |
 | `primaryOutcome` | Main progress the buyer is hiring the offer to create |
 

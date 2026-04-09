@@ -5,7 +5,10 @@
   "location": "Remote",
   "bio": "Minimalist example.",
   "business": {
-    "whoIServe": "independent consultants",
+    "positioningStatement": "I help independent consultants with muddy positioning by clarifying their offer.",
+    "audience": "independent consultants",
+    "primaryProblem": "muddy positioning",
+    "solution": "clarifying their offer",
     "targetMarket": "consultants",
     "primaryOutcome": "clearer positioning"
   },
