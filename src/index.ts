@@ -266,26 +266,8 @@ export interface Me3BookingPricing {
   currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
   /** Minimum amount bookers can pay (always $5) */
   minimumAmount: 5;
-  /** Whether visitors can choose their own amount above the base price */
-  allowFlexiblePricing?: boolean;
   /** Whether to allow free meetings alongside paid ones */
   allowFree: boolean;
-}
-
-/**
- * A specific bookable offer that shares the parent booking schedule/settings.
- */
-export interface Me3BookingOffer {
-  /** Stable identifier for the offer */
-  id: string;
-  /** Offer title shown to visitors */
-  title: string;
-  /** Short offer description */
-  description?: string;
-  /** Offer duration in minutes */
-  duration?: number;
-  /** Pricing configuration for this offer (optional) */
-  pricing?: Me3BookingPricing;
 }
 
 /**
@@ -311,8 +293,6 @@ export interface Me3IntentBook {
   availability?: Me3BookingAvailability;
   /** Pricing configuration for paid meetings (optional) */
   pricing?: Me3BookingPricing;
-  /** Optional list of bookable offers sharing the same schedule/settings */
-  offers?: Me3BookingOffer[];
 }
 
 /**
@@ -1606,156 +1586,11 @@ export function validateProfile(data: unknown): ValidationResult {
                   });
                 }
 
-                if (
-                  pricing.allowFlexiblePricing !== undefined &&
-                  typeof pricing.allowFlexiblePricing !== "boolean"
-                ) {
-                  errors.push({
-                    field: "intents.book.pricing.allowFlexiblePricing",
-                    message: "Allow flexible pricing must be a boolean",
-                  });
-                }
-
                 if (typeof pricing.allowFree !== "boolean") {
                   errors.push({
                     field: "intents.book.pricing.allowFree",
                     message: "Allow free must be a boolean",
                   });
-                }
-              }
-            }
-          }
-
-          if (book.offers !== undefined) {
-            if (!Array.isArray(book.offers)) {
-              errors.push({
-                field: "intents.book.offers",
-                message: "Book offers must be an array",
-              });
-            } else {
-              for (const [index, value] of book.offers.entries()) {
-                if (typeof value !== "object" || value === null) {
-                  errors.push({
-                    field: `intents.book.offers[${index}]`,
-                    message: "Book offer must be an object",
-                  });
-                  continue;
-                }
-
-                const offer = value as Record<string, unknown>;
-
-                if (!offer.id || typeof offer.id !== "string") {
-                  errors.push({
-                    field: `intents.book.offers[${index}].id`,
-                    message: "Book offer id is required",
-                  });
-                }
-
-                if (!offer.title || typeof offer.title !== "string") {
-                  errors.push({
-                    field: `intents.book.offers[${index}].title`,
-                    message: "Book offer title is required",
-                  });
-                } else if (offer.title.length > MAX_INTENT_TITLE_LENGTH) {
-                  errors.push({
-                    field: `intents.book.offers[${index}].title`,
-                    message: `Book offer title must be ${MAX_INTENT_TITLE_LENGTH} characters or less`,
-                  });
-                }
-
-                if (offer.description !== undefined) {
-                  if (typeof offer.description !== "string") {
-                    errors.push({
-                      field: `intents.book.offers[${index}].description`,
-                      message: "Book offer description must be a string",
-                    });
-                  } else if (
-                    offer.description.length > MAX_INTENT_DESCRIPTION_LENGTH
-                  ) {
-                    errors.push({
-                      field: `intents.book.offers[${index}].description`,
-                      message: `Book offer description must be ${MAX_INTENT_DESCRIPTION_LENGTH} characters or less`,
-                    });
-                  }
-                }
-
-                if (
-                  offer.duration !== undefined &&
-                  typeof offer.duration !== "number"
-                ) {
-                  errors.push({
-                    field: `intents.book.offers[${index}].duration`,
-                    message: "Book offer duration must be a number (minutes)",
-                  });
-                }
-
-                if (offer.pricing !== undefined) {
-                  if (
-                    typeof offer.pricing !== "object" ||
-                    offer.pricing === null
-                  ) {
-                    errors.push({
-                      field: `intents.book.offers[${index}].pricing`,
-                      message: "Book offer pricing must be an object",
-                    });
-                  } else {
-                    const pricing = offer.pricing as Record<string, unknown>;
-
-                    if (typeof pricing.enabled !== "boolean") {
-                      errors.push({
-                        field: `intents.book.offers[${index}].pricing.enabled`,
-                        message: "Pricing enabled must be a boolean",
-                      });
-                    }
-
-                    if (pricing.enabled) {
-                      if (typeof pricing.suggestedAmount !== "number") {
-                        errors.push({
-                          field: `intents.book.offers[${index}].pricing.suggestedAmount`,
-                          message: "Suggested amount must be a number",
-                        });
-                      } else if (pricing.suggestedAmount < 5) {
-                        errors.push({
-                          field: `intents.book.offers[${index}].pricing.suggestedAmount`,
-                          message: "Suggested amount must be at least $5",
-                        });
-                      }
-
-                      if (
-                        typeof pricing.currency !== "string" ||
-                        !VALID_CURRENCIES.includes(pricing.currency)
-                      ) {
-                        errors.push({
-                          field: `intents.book.offers[${index}].pricing.currency`,
-                          message: `Currency must be one of: ${VALID_CURRENCIES.join(", ")}`,
-                        });
-                      }
-
-                      if (pricing.minimumAmount !== 5) {
-                        errors.push({
-                          field: `intents.book.offers[${index}].pricing.minimumAmount`,
-                          message: "Minimum amount must be 5",
-                        });
-                      }
-
-                      if (
-                        pricing.allowFlexiblePricing !== undefined &&
-                        typeof pricing.allowFlexiblePricing !== "boolean"
-                      ) {
-                        errors.push({
-                          field: `intents.book.offers[${index}].pricing.allowFlexiblePricing`,
-                          message: "Allow flexible pricing must be a boolean",
-                        });
-                      }
-
-                      if (typeof pricing.allowFree !== "boolean") {
-                        errors.push({
-                          field: `intents.book.offers[${index}].pricing.allowFree`,
-                          message: "Allow free must be a boolean",
-                        });
-                      }
-                    }
-                  }
                 }
               }
             }
