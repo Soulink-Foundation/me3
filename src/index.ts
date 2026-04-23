@@ -340,7 +340,7 @@ export interface Me3Profile {
   banner?: string;
   /** Social and external links */
   links?: Me3Links;
-  /** Call-to-action buttons (max 3) */
+  /** Call-to-action buttons */
   buttons?: Me3Button[];
   /** Custom pages (markdown) */
   pages?: Me3Page[];
@@ -398,7 +398,6 @@ const MAX_BIO_LENGTH = 500;
 const MAX_HANDLE_LENGTH = 30;
 const HANDLE_REGEX = /^[a-z0-9_-]+$/i;
 const MAX_LOCATION_LENGTH = 100;
-const MAX_BUTTONS = 3;
 const MAX_BUTTON_TEXT_LENGTH = 30;
 const VALID_BUTTON_STYLES = ["primary", "secondary", "outline"];
 const URL_REGEX = /^https?:\/\/.+/i;
@@ -610,12 +609,6 @@ export function validateProfile(data: unknown): ValidationResult {
     if (!Array.isArray(profile.buttons)) {
       errors.push({ field: "buttons", message: "Buttons must be an array" });
     } else {
-      if (profile.buttons.length > MAX_BUTTONS) {
-        errors.push({
-          field: "buttons",
-          message: `Maximum ${MAX_BUTTONS} buttons allowed`,
-        });
-      }
       profile.buttons.forEach((button, index) => {
         if (!button || typeof button !== "object") {
           errors.push({

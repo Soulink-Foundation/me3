@@ -156,7 +156,7 @@ Beyond intents, `me.json` includes identity and presentation fields:
 | `banner`   | `string` | No       | Header/banner image URL.                             |
 | `location` | `string` | No       | Freeform location (e.g., "Berlin" or "Remote").      |
 | `links`    | `object` | No       | Social links (`website`, `github`, `twitter`, etc.). |
-| `buttons`  | `array`  | No       | Call-to-action buttons for human visitors.           |
+| `buttons`  | `array`  | No       | Call-to-action buttons for human visitors. Add as many as you need. |
 | `pages`    | `array`  | No       | Custom content pages (markdown).                     |
 | `business` | `object` | No       | Compact site/business context for agents.             |
 | `services` | `array`  | No       | Structured services or offerings for agents.         |

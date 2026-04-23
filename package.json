@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test",
     "generate-schema": "ts-json-schema-generator --path 'src/index.ts' --type 'Me3Profile' --out 'schema.json' --no-type-check",
     "prepublishOnly": "npm run build && npm run generate-schema"
   },

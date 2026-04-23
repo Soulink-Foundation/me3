@@ -616,7 +616,7 @@
           "description": "Structured site/business context for agents"
         },
         "buttons": {
-          "description": "Call-to-action buttons (max 3)",
+          "description": "Call-to-action buttons",
           "items": {
             "$ref": "#/definitions/Me3Button"
           },
