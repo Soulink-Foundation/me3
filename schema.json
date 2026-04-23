@@ -103,10 +103,45 @@
       ],
       "type": "object"
     },
+    "Me3BookingOffer": {
+      "additionalProperties": false,
+      "description": "A specific bookable offer that shares the parent booking schedule/settings.",
+      "properties": {
+        "description": {
+          "description": "Short offer description",
+          "type": "string"
+        },
+        "duration": {
+          "description": "Offer duration in minutes",
+          "type": "number"
+        },
+        "id": {
+          "description": "Stable identifier for the offer",
+          "type": "string"
+        },
+        "pricing": {
+          "$ref": "#/definitions/Me3BookingPricing",
+          "description": "Pricing configuration for this offer (optional)"
+        },
+        "title": {
+          "description": "Offer title shown to visitors",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "type": "object"
+    },
     "Me3BookingPricing": {
       "additionalProperties": false,
       "description": "Booking pricing configuration. Allows hosts to charge for meetings with a sliding scale pay-what-you-want model.",
       "properties": {
+        "allowFlexiblePricing": {
+          "description": "Whether visitors can choose their own amount above the base price",
+          "type": "boolean"
+        },
         "allowFree": {
           "description": "Whether to allow free meetings alongside paid ones",
           "type": "boolean"
@@ -266,6 +301,13 @@
         "enabled": {
           "description": "Whether booking is enabled",
           "type": "boolean"
+        },
+        "offers": {
+          "description": "Optional list of bookable offers sharing the same schedule/settings",
+          "items": {
+            "$ref": "#/definitions/Me3BookingOffer"
+          },
+          "type": "array"
         },
         "pricing": {
           "$ref": "#/definitions/Me3BookingPricing",
