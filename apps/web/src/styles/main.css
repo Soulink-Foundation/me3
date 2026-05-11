@@ -1,0 +1,155 @@
+/* me3 Global Styles */
+
+:root {
+  --brand-primary: oklch(59.02% 0.146 172.62);
+  --brand-primary-strong: color-mix(in oklab, var(--brand-primary), black 10%);
+  --brand-primary-soft: color-mix(in oklab, var(--brand-primary), white 85%);
+  --color-bg: #ffffff;
+  --color-bg-subtle: #f6f7f7;
+  --color-bg-muted: #eef1f0;
+  --color-text: #232428;
+  --color-text-muted: #5d6368;
+  --color-border: rgba(35, 36, 40, 0.12);
+  --color-border-strong: rgba(35, 36, 40, 0.2);
+  --color-accent: var(--brand-primary);
+  --color-accent-contrast: #102118;
+  --shadow-soft: 0 12px 30px rgba(27, 27, 29, 0.08);
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --color-bg: #111;
+    --color-bg-subtle: #1a1a1a;
+    --color-bg-muted: #222;
+    --color-text: #e8e8e8;
+    --color-text-muted: #a9a9b2;
+    --color-border: rgba(255, 255, 255, 0.12);
+    --color-border-strong: rgba(255, 255, 255, 0.18);
+    --color-accent: var(--brand-primary);
+    --color-accent-contrast: #07110d;
+    --shadow-soft: 0 18px 42px rgba(0, 0, 0, 0.28);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="light"] {
+  --color-bg: #ffffff;
+  --color-bg-subtle: #f6f7f7;
+  --color-bg-muted: #eef1f0;
+  --color-text: #232428;
+  --color-text-muted: #5d6368;
+  --color-border: rgba(35, 36, 40, 0.12);
+  --color-border-strong: rgba(35, 36, 40, 0.2);
+  --color-accent: var(--brand-primary);
+  --color-accent-contrast: #102118;
+  --shadow-soft: 0 12px 30px rgba(27, 27, 29, 0.08);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #111;
+  --color-bg-subtle: #1a1a1a;
+  --color-bg-muted: #222;
+  --color-text: #e8e8e8;
+  --color-text-muted: #a9a9b2;
+  --color-border: rgba(255, 255, 255, 0.12);
+  --color-border-strong: rgba(255, 255, 255, 0.18);
+  --color-accent: var(--brand-primary);
+  --color-accent-contrast: #07110d;
+  --shadow-soft: 0 18px 42px rgba(0, 0, 0, 0.28);
+  color-scheme: dark;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font-family: inherit;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-accent), transparent 72%);
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Celebration Animation */
+.celebration-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 9999;
+  overflow: hidden;
+}
+
+.celebration-emoji {
+  position: absolute;
+  font-size: 32px;
+  animation: celebrate 1s ease-out forwards;
+  opacity: 0;
+}
+
+@keyframes celebrate {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(0);
+  }
+  10% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--end-x), var(--end-y)) rotate(720deg) scale(0.5);
+  }
+}
+
+/* vue-sonner: match ME3 surfaces (no loud semantic fills) */
+[data-sonner-toaster][data-theme="light"],
+[data-sonner-toaster][data-theme="dark"] {
+  --normal-bg: var(--color-bg);
+  --normal-border: var(--color-border-strong);
+  --normal-text: var(--color-text);
+  --success-bg: var(--color-bg-subtle);
+  --success-border: var(--color-border-strong);
+  --success-text: var(--color-text);
+  --error-bg: var(--color-bg-subtle);
+  --error-border: var(--color-border-strong);
+  --error-text: var(--color-text);
+  --warning-bg: var(--color-bg-subtle);
+  --warning-border: var(--color-border-strong);
+  --warning-text: var(--color-text);
+  --info-bg: var(--color-bg-subtle);
+  --info-border: var(--color-border-strong);
+  --info-text: var(--color-text);
+}

@@ -1,0 +1,2092 @@
+<script setup lang="ts">
+import { ref, computed, onMounted, watch } from "vue";
+import { storeToRefs } from "pinia";
+import {
+  useWizardStore,
+  type WizardBookingConfig,
+  type WizardBookingDuration,
+  type WizardBookingOffer,
+  type WizardBookingPricing,
+  type WizardBookingType,
+  type WizardClassOffer,
+  type WizardRetreatOffer,
+} from "../../stores/wizard";
+import WizardStripeConnectPanel from "./WizardStripeConnectPanel.vue";
+import BookingOfferDescriptionEditor from "./BookingOfferDescriptionEditor.vue";
+import UiIcon from "../UiIcon.vue";
+
+const wizard = useWizardStore();
+const { profile } = storeToRefs(wizard);
+
+type StripeConnectStatus =
+  | "not_connected"
+  | "pending"
+  | "active"
+  | "restricted";
+
+const activeBookingType = ref<WizardBookingType | null>(null);
+const activeOfferId = ref<string | null>(null);
+const activeClassOfferId = ref<string | null>(null);
+const activeRetreatOfferId = ref<string | null>(null);
+const showAddTypeMenu = ref(false);
+const stripeConnectStatus = ref<StripeConnectStatus>("not_connected");
+
+const enabledBookingTypes = computed(() => {
+  const types: Array<{ type: WizardBookingType; label: string }> = [];
+  if (profile.value.booking.oneToOneEnabled) {
+    types.push({ type: "one_to_one", label: "1:1" });
+  }
+  if (profile.value.booking.classEnabled) {
+    types.push({ type: "class", label: "Classes" });
+  }
+  if (profile.value.booking.retreatEnabled) {
+    types.push({ type: "retreat", label: "Retreats" });
+  }
+  return types;
+});
+
+const hasBookingTypes = computed(() => enabledBookingTypes.value.length > 0);
+const bookingOffers = computed(() => profile.value.booking.offers);
+const classOffers = computed(() => profile.value.booking.classOffers);
+const retreatOffers = computed(() => profile.value.booking.retreatOffers);
+
+function parseRetreatWallDateTime(
+  date: string | undefined,
+  time: string | undefined,
+): number | null {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) return null;
+
+  const timestamp = Date.parse(`${date}T${time}:00Z`);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function deriveRetreatDurationDays(offer: Partial<WizardRetreatOffer> | null) {
+  const startMs = parseRetreatWallDateTime(offer?.startDate, offer?.startTime);
+  const endMs = parseRetreatWallDateTime(offer?.endDate, offer?.endTime);
+
+  if (startMs !== null && endMs !== null && endMs > startMs) {
+    return Math.max(1, Math.ceil((endMs - startMs) / (24 * 60 * 60 * 1000)));
+  }
+
+  if (
+    typeof offer?.durationDays === "number" &&
+    Number.isFinite(offer.durationDays) &&
+    offer.durationDays >= 1
+  ) {
+    return Math.round(offer.durationDays);
+  }
+
+  return 1;
+}
+
+watch(
+  enabledBookingTypes,
+  (types) => {
+    if (!types.length) {
+      activeBookingType.value = null;
+      return;
+    }
+    if (
+      !activeBookingType.value ||
+      !types.some((t) => t.type === activeBookingType.value)
+    ) {
+      activeBookingType.value = types[0]?.type || null;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => bookingOffers.value.map((offer) => offer.id),
+  (offerIds) => {
+    if (!activeOfferId.value || !offerIds.includes(activeOfferId.value)) {
+      activeOfferId.value = offerIds[0] || null;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => classOffers.value.map((offer) => offer.id),
+  (offerIds) => {
+    if (
+      !activeClassOfferId.value ||
+      !offerIds.includes(activeClassOfferId.value)
+    ) {
+      activeClassOfferId.value = offerIds[0] || null;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => retreatOffers.value.map((offer) => offer.id),
+  (offerIds) => {
+    if (
+      !activeRetreatOfferId.value ||
+      !offerIds.includes(activeRetreatOfferId.value)
+    ) {
+      activeRetreatOfferId.value = offerIds[0] || null;
+    }
+  },
+  { immediate: true },
+);
+
+const bookingHeadingTitle = computed({
+  get: () => profile.value.booking.title || "",
+  set: (val: string) => wizard.setBooking({ title: val }),
+});
+
+const bookingHeadingDescription = computed({
+  get: () => profile.value.booking.description || "",
+  set: (val: string) => wizard.setBooking({ description: val }),
+});
+
+const bookingBufferTime = computed({
+  get: () => profile.value.booking.bufferTime,
+  set: (val: WizardBookingConfig["bufferTime"]) =>
+    wizard.setBooking({ bufferTime: val }),
+});
+
+const bookingTimezone = computed({
+  get: () => profile.value.booking.timezone,
+  set: (val: string) => wizard.setBooking({ timezone: val }),
+});
+
+const activeOffer = computed(() => {
+  if (!activeOfferId.value) return bookingOffers.value[0] || null;
+  return (
+    bookingOffers.value.find((offer) => offer.id === activeOfferId.value) ||
+    bookingOffers.value[0] ||
+    null
+  );
+});
+
+function updateActiveOffer(updates: Partial<WizardBookingOffer>) {
+  if (!activeOffer.value) return;
+  wizard.updateBookingOffer(activeOffer.value.id, updates);
+}
+
+const activeOfferTitle = computed({
+  get: () => activeOffer.value?.title || "",
+  set: (val: string) => updateActiveOffer({ title: val }),
+});
+
+const activeOfferDescription = computed({
+  get: () => activeOffer.value?.description || "",
+  set: (val: string) => updateActiveOffer({ description: val }),
+});
+
+const activeOfferDuration = computed({
+  get: () => activeOffer.value?.duration || 30,
+  set: (val: WizardBookingDuration) => updateActiveOffer({ duration: val }),
+});
+
+const activeOfferPriceMode = computed({
+  get: () => (activeOffer.value?.pricing?.enabled ? "paid" : "free"),
+  set: (val: "free" | "paid") => {
+    if (!activeOffer.value) return;
+    if (val === "free") {
+      wizard.setBookingOfferPricing(activeOffer.value.id, null);
+      return;
+    }
+    wizard.setBookingOfferPricing(activeOffer.value.id, {
+      enabled: true,
+      suggestedAmount: activeOffer.value.pricing?.suggestedAmount ?? 50,
+      currency: activeOffer.value.pricing?.currency ?? "USD",
+      minimumAmount: 5,
+      allowFree: false,
+    });
+  },
+});
+
+const activeOfferPriceAmount = computed({
+  get: () => activeOffer.value?.pricing?.suggestedAmount ?? 50,
+  set: (val: number) => {
+    if (!activeOffer.value) return;
+    wizard.setBookingOfferPricing(activeOffer.value.id, {
+      suggestedAmount: Math.max(5, val),
+    });
+  },
+});
+
+const activeOfferPriceCurrency = computed({
+  get: () => activeOffer.value?.pricing?.currency ?? "USD",
+  set: (val: WizardBookingPricing["currency"]) => {
+    if (!activeOffer.value) return;
+    wizard.setBookingOfferPricing(activeOffer.value.id, { currency: val });
+  },
+});
+
+const activeClassOffer = computed(() => {
+  if (!activeClassOfferId.value) return classOffers.value[0] || null;
+  return (
+    classOffers.value.find((offer) => offer.id === activeClassOfferId.value) ||
+    classOffers.value[0] ||
+    null
+  );
+});
+
+function updateActiveClassOffer(updates: Partial<WizardClassOffer>) {
+  if (!activeClassOffer.value) return;
+  wizard.updateClassOffer(activeClassOffer.value.id, updates);
+}
+
+const activeClassOfferTitle = computed({
+  get: () => activeClassOffer.value?.title || "",
+  set: (val: string) => updateActiveClassOffer({ title: val }),
+});
+
+const activeClassOfferDescription = computed({
+  get: () => activeClassOffer.value?.description || "",
+  set: (val: string) => updateActiveClassOffer({ description: val }),
+});
+
+const activeClassOfferDuration = computed({
+  get: () => activeClassOffer.value?.duration || 60,
+  set: (val: WizardBookingDuration) =>
+    updateActiveClassOffer({ duration: val }),
+});
+
+const activeClassOfferTimezone = computed({
+  get: () =>
+    activeClassOffer.value?.timezone ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    "UTC",
+  set: (val: string) => updateActiveClassOffer({ timezone: val }),
+});
+
+const activeClassOfferFrequency = computed({
+  get: () => activeClassOffer.value?.recurrence.frequency || "weekly",
+  set: (val: "weekly" | "biweekly") =>
+    updateActiveClassOffer({
+      recurrence: {
+        ...(activeClassOffer.value?.recurrence || {
+          weekday: "monday",
+          startTime: "18:00",
+        }),
+        frequency: val,
+      },
+    }),
+});
+
+const activeClassOfferWeekday = computed({
+  get: () => activeClassOffer.value?.recurrence.weekday || "monday",
+  set: (val: WizardClassOffer["recurrence"]["weekday"]) =>
+    updateActiveClassOffer({
+      recurrence: {
+        ...(activeClassOffer.value?.recurrence || {
+          frequency: "weekly",
+          startTime: "18:00",
+        }),
+        weekday: val,
+      },
+    }),
+});
+
+const activeClassOfferStartTime = computed({
+  get: () => activeClassOffer.value?.recurrence.startTime || "18:00",
+  set: (val: string) =>
+    updateActiveClassOffer({
+      recurrence: {
+        ...(activeClassOffer.value?.recurrence || {
+          frequency: "weekly",
+          weekday: "monday",
+        }),
+        startTime: val,
+      },
+    }),
+});
+
+const activeClassOfferPriceMode = computed({
+  get: () => (activeClassOffer.value?.pricing?.enabled ? "paid" : "free"),
+  set: (val: "free" | "paid") => {
+    if (!activeClassOffer.value) return;
+    if (val === "free") {
+      wizard.setClassOfferPricing(activeClassOffer.value.id, null);
+      return;
+    }
+    wizard.setClassOfferPricing(activeClassOffer.value.id, {
+      enabled: true,
+      suggestedAmount: activeClassOffer.value.pricing?.suggestedAmount ?? 25,
+      currency: activeClassOffer.value.pricing?.currency ?? "USD",
+      minimumAmount: 5,
+      allowFree: false,
+    });
+  },
+});
+
+const activeClassOfferPriceAmount = computed({
+  get: () => activeClassOffer.value?.pricing?.suggestedAmount ?? 25,
+  set: (val: number) => {
+    if (!activeClassOffer.value) return;
+    wizard.setClassOfferPricing(activeClassOffer.value.id, {
+      suggestedAmount: Math.max(5, val),
+    });
+  },
+});
+
+const activeClassOfferPriceCurrency = computed({
+  get: () => activeClassOffer.value?.pricing?.currency ?? "USD",
+  set: (val: WizardBookingPricing["currency"]) => {
+    if (!activeClassOffer.value) return;
+    wizard.setClassOfferPricing(activeClassOffer.value.id, { currency: val });
+  },
+});
+
+const activeClassCapacityEnabled = computed({
+  get: () => activeClassOffer.value?.capacity !== null,
+  set: (val: boolean) => {
+    if (!activeClassOffer.value) return;
+    updateActiveClassOffer({
+      capacity: val ? activeClassOffer.value.capacity || 12 : null,
+    });
+  },
+});
+
+const activeClassCapacity = computed({
+  get: () => activeClassOffer.value?.capacity ?? 12,
+  set: (val: number) => {
+    if (!activeClassOffer.value) return;
+    updateActiveClassOffer({ capacity: Math.max(1, Math.round(val || 1)) });
+  },
+});
+
+const activeRetreatOffer = computed(() => {
+  if (!activeRetreatOfferId.value) return retreatOffers.value[0] || null;
+  return (
+    retreatOffers.value.find(
+      (offer) => offer.id === activeRetreatOfferId.value,
+    ) ||
+    retreatOffers.value[0] ||
+    null
+  );
+});
+
+function updateActiveRetreatOffer(updates: Partial<WizardRetreatOffer>) {
+  if (!activeRetreatOffer.value) return;
+  wizard.updateRetreatOffer(activeRetreatOffer.value.id, updates);
+}
+
+const activeRetreatOfferTitle = computed({
+  get: () => activeRetreatOffer.value?.title || "",
+  set: (val: string) => updateActiveRetreatOffer({ title: val }),
+});
+
+const activeRetreatOfferDescription = computed({
+  get: () => activeRetreatOffer.value?.description || "",
+  set: (val: string) => updateActiveRetreatOffer({ description: val }),
+});
+
+const activeRetreatDurationDays = computed({
+  get: () => deriveRetreatDurationDays(activeRetreatOffer.value),
+  set: () => {},
+});
+
+const activeRetreatStartDate = computed({
+  get: () => activeRetreatOffer.value?.startDate || "",
+  set: (val: string) => updateActiveRetreatOffer({ startDate: val }),
+});
+
+const activeRetreatStartTime = computed({
+  get: () => activeRetreatOffer.value?.startTime || "09:00",
+  set: (val: string) => updateActiveRetreatOffer({ startTime: val }),
+});
+
+const activeRetreatEndDate = computed({
+  get: () => activeRetreatOffer.value?.endDate || "",
+  set: (val: string) => updateActiveRetreatOffer({ endDate: val }),
+});
+
+const activeRetreatEndTime = computed({
+  get: () => activeRetreatOffer.value?.endTime || "17:00",
+  set: (val: string) => updateActiveRetreatOffer({ endTime: val }),
+});
+
+const activeRetreatOfferTimezone = computed({
+  get: () =>
+    activeRetreatOffer.value?.timezone ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    "UTC",
+  set: (val: string) => updateActiveRetreatOffer({ timezone: val }),
+});
+
+const activeRetreatOfferPriceMode = computed({
+  get: () => (activeRetreatOffer.value?.pricing?.enabled ? "paid" : "free"),
+  set: (val: "free" | "paid") => {
+    if (!activeRetreatOffer.value) return;
+    if (val === "free") {
+      wizard.setRetreatOfferPricing(activeRetreatOffer.value.id, null);
+      return;
+    }
+    wizard.setRetreatOfferPricing(activeRetreatOffer.value.id, {
+      enabled: true,
+      suggestedAmount: activeRetreatOffer.value.pricing?.suggestedAmount ?? 25,
+      currency: activeRetreatOffer.value.pricing?.currency ?? "USD",
+      minimumAmount: 5,
+      allowFree: false,
+    });
+  },
+});
+
+const activeRetreatOfferPriceAmount = computed({
+  get: () => activeRetreatOffer.value?.pricing?.suggestedAmount ?? 25,
+  set: (val: number) => {
+    if (!activeRetreatOffer.value) return;
+    wizard.setRetreatOfferPricing(activeRetreatOffer.value.id, {
+      suggestedAmount: Math.max(5, val),
+    });
+  },
+});
+
+const activeRetreatOfferPriceCurrency = computed({
+  get: () => activeRetreatOffer.value?.pricing?.currency ?? "USD",
+  set: (val: WizardBookingPricing["currency"]) => {
+    if (!activeRetreatOffer.value) return;
+    wizard.setRetreatOfferPricing(activeRetreatOffer.value.id, {
+      currency: val,
+    });
+  },
+});
+
+const activeRetreatCapacityEnabled = computed({
+  get: () => activeRetreatOffer.value?.capacity !== null,
+  set: (val: boolean) => {
+    if (!activeRetreatOffer.value) return;
+    updateActiveRetreatOffer({
+      capacity: val ? activeRetreatOffer.value.capacity || 12 : null,
+    });
+  },
+});
+
+const activeRetreatCapacity = computed({
+  get: () => activeRetreatOffer.value?.capacity ?? 12,
+  set: (val: number) => {
+    if (!activeRetreatOffer.value) return;
+    updateActiveRetreatOffer({ capacity: Math.max(1, Math.round(val || 1)) });
+  },
+});
+
+const hasPaidBookingItems = computed(() =>
+  [
+    ...(profile.value.booking.oneToOneEnabled
+      ? profile.value.booking.offers
+      : []),
+    ...(profile.value.booking.classEnabled
+      ? profile.value.booking.classOffers
+      : []),
+    ...(profile.value.booking.retreatEnabled
+      ? profile.value.booking.retreatOffers
+      : []),
+  ].some((offer) => offer.pricing?.enabled),
+);
+
+const bookingFlexiblePricingEnabled = computed({
+  get: () => {
+    const paidOffers = [
+      ...(profile.value.booking.oneToOneEnabled
+        ? profile.value.booking.offers
+        : []),
+      ...(profile.value.booking.classEnabled
+        ? profile.value.booking.classOffers
+        : []),
+      ...(profile.value.booking.retreatEnabled
+        ? profile.value.booking.retreatOffers
+        : []),
+    ].filter((offer) => offer.pricing?.enabled);
+    if (paidOffers.length === 0) return true;
+    return paidOffers.every(
+      (offer) => offer.pricing?.allowFlexiblePricing !== false,
+    );
+  },
+  set: (val: boolean) => {
+    wizard.setPaidBookingOffersPricing({ allowFlexiblePricing: val });
+  },
+});
+
+const bookingTypeOptions = computed(() => [
+  {
+    type: "one_to_one" as const,
+    label: "1:1",
+    enabled: profile.value.booking.oneToOneEnabled,
+  },
+  {
+    type: "class" as const,
+    label: "Class",
+    enabled: profile.value.booking.classEnabled,
+  },
+  {
+    type: "retreat" as const,
+    label: "Retreat",
+    enabled: profile.value.booking.retreatEnabled,
+  },
+]);
+
+const availableBookingTypeOptions = computed(() =>
+  bookingTypeOptions.value.filter((option) => !option.enabled),
+);
+
+const days = [
+  { key: "monday", label: "Mon" },
+  { key: "tuesday", label: "Tue" },
+  { key: "wednesday", label: "Wed" },
+  { key: "thursday", label: "Thu" },
+  { key: "friday", label: "Fri" },
+  { key: "saturday", label: "Sat" },
+  { key: "sunday", label: "Sun" },
+] as const;
+
+const weekdayOptions = [
+  { value: "monday", label: "Monday" },
+  { value: "tuesday", label: "Tuesday" },
+  { value: "wednesday", label: "Wednesday" },
+  { value: "thursday", label: "Thursday" },
+  { value: "friday", label: "Friday" },
+  { value: "saturday", label: "Saturday" },
+  { value: "sunday", label: "Sunday" },
+] as const;
+
+const timezones = [
+  { value: "America/New_York", label: "Eastern Time (ET)" },
+  { value: "America/Chicago", label: "Central Time (CT)" },
+  { value: "America/Denver", label: "Mountain Time (MT)" },
+  { value: "America/Los_Angeles", label: "Pacific Time (PT)" },
+  { value: "Europe/Dublin", label: "Dublin (GMT/IST)" },
+  { value: "Europe/London", label: "London (GMT/BST)" },
+  { value: "Europe/Paris", label: "Paris (CET/CEST)" },
+  { value: "Europe/Berlin", label: "Berlin (CET/CEST)" },
+  { value: "Asia/Dubai", label: "Dubai (GST)" },
+  { value: "Asia/Karachi", label: "Pakistan (PKT)" },
+  { value: "Asia/Kolkata", label: "India (IST)" },
+  { value: "Asia/Singapore", label: "Singapore (SGT)" },
+  { value: "Australia/Sydney", label: "Sydney (AEST/AEDT)" },
+  { value: "UTC", label: "UTC" },
+];
+
+function formatTimezoneLabel(timezone: string): string {
+  const fallback = timezone.split("/").pop()?.replace(/_/g, " ") || timezone;
+  return `${fallback} (${timezone})`;
+}
+
+const timezoneOptions = computed(() => {
+  const seen = new Set<string>();
+  const options = [...timezones];
+  const currentValues = [
+    profile.value.booking.timezone,
+    ...profile.value.booking.classOffers.map((offer) => offer.timezone),
+    ...profile.value.booking.retreatOffers.map((offer) => offer.timezone),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const value of currentValues) {
+    if (seen.has(value) || options.some((option) => option.value === value))
+      continue;
+    seen.add(value);
+    options.unshift({ value, label: formatTimezoneLabel(value) });
+  }
+
+  return options;
+});
+
+const editingDay = ref<string | null>(null);
+const editingWindows = ref<string>("");
+
+function selectBookingType(type: WizardBookingType) {
+  activeBookingType.value = type;
+  showAddTypeMenu.value = false;
+}
+
+function enableBookingType(type: WizardBookingType) {
+  wizard.enableBookingType(type);
+  activeBookingType.value = type;
+  showAddTypeMenu.value = false;
+}
+
+function disableBookingType(type: WizardBookingType) {
+  wizard.disableBookingType(type);
+}
+
+function addOffer() {
+  const newOfferId = wizard.addBookingOffer();
+  activeOfferId.value = newOfferId;
+}
+
+function removeOffer(offerId: string) {
+  wizard.removeBookingOffer(offerId);
+}
+
+function addClassOffer() {
+  const newOfferId = wizard.addClassOffer();
+  activeClassOfferId.value = newOfferId;
+}
+
+function removeClassOffer(offerId: string) {
+  wizard.removeClassOffer(offerId);
+}
+
+function addRetreatOffer() {
+  const newOfferId = wizard.addRetreatOffer();
+  activeRetreatOfferId.value = newOfferId;
+}
+
+function removeRetreatOffer(offerId: string) {
+  wizard.removeRetreatOffer(offerId);
+}
+
+const TAB_LABEL_MAX = 12;
+
+function compactTabLabel(
+  input: { title?: string | null },
+  fallback: string,
+): string {
+  const value = input.title?.trim();
+  if (!value) return fallback;
+  return value.length > TAB_LABEL_MAX
+    ? `${value.slice(0, TAB_LABEL_MAX - 1)}…`
+    : value;
+}
+
+function openDayEditor(day: string) {
+  const availability = profile.value.booking.availability;
+  const windows = availability[day as keyof typeof availability] || [];
+  editingWindows.value = windows.join(", ");
+  editingDay.value = day;
+}
+
+function saveDayWindows() {
+  if (!editingDay.value) return;
+
+  const windows = editingWindows.value
+    .split(",")
+    .map((w) => w.trim())
+    .filter((w) => /^\d{2}:\d{2}-\d{2}:\d{2}$/.test(w));
+
+  wizard.setBookingAvailability(
+    editingDay.value as keyof WizardBookingConfig["availability"],
+    windows,
+  );
+  editingDay.value = null;
+  editingWindows.value = "";
+}
+
+function cancelDayEdit() {
+  editingDay.value = null;
+  editingWindows.value = "";
+}
+
+function clearDayWindows(day: string) {
+  wizard.setBookingAvailability(
+    day as keyof WizardBookingConfig["availability"],
+    [],
+  );
+}
+
+function applyWeekdayPreset() {
+  const window = ["09:00-17:00"];
+  wizard.setBookingAvailability("monday", window);
+  wizard.setBookingAvailability("tuesday", window);
+  wizard.setBookingAvailability("wednesday", window);
+  wizard.setBookingAvailability("thursday", window);
+  wizard.setBookingAvailability("friday", window);
+  wizard.setBookingAvailability("saturday", []);
+  wizard.setBookingAvailability("sunday", []);
+}
+
+function applyMorningsPreset() {
+  const window = ["09:00-12:00"];
+  wizard.setBookingAvailability("monday", window);
+  wizard.setBookingAvailability("tuesday", window);
+  wizard.setBookingAvailability("wednesday", window);
+  wizard.setBookingAvailability("thursday", window);
+  wizard.setBookingAvailability("friday", window);
+  wizard.setBookingAvailability("saturday", []);
+  wizard.setBookingAvailability("sunday", []);
+}
+
+function clearAllAvailability() {
+  for (const day of days) {
+    wizard.setBookingAvailability(day.key, []);
+  }
+}
+
+function onStripeConnectStatusUpdate(status: StripeConnectStatus) {
+  stripeConnectStatus.value = status;
+}
+
+onMounted(() => {
+  wizard.setBooking({ enabled: true });
+});
+</script>
+
+<template>
+  <div class="step-bookings">
+    <h2>Accept Bookings</h2>
+    <p class="section-desc">
+      Add the kinds of bookings you want to offer, then configure each one with
+      the simplest setup that fits.
+    </p>
+
+    <div class="config-fields">
+      <div class="section-heading">
+        <label class="section-label">Booking types</label>
+        <div class="type-actions">
+          <div class="add-type-menu-wrap">
+            <button
+              type="button"
+              class="offer-tab-add"
+              @click="showAddTypeMenu = !showAddTypeMenu"
+            >
+              <UiIcon name="Plus" :size="18" aria-hidden="true" />
+              <span>Add</span>
+            </button>
+
+            <div v-if="showAddTypeMenu" class="type-dropdown">
+              <button
+                v-for="option in availableBookingTypeOptions"
+                :key="option.type"
+                type="button"
+                class="type-dropdown-item"
+                @click="enableBookingType(option.type)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="!hasBookingTypes" class="empty-bookings-state">
+        <p class="empty-bookings-title">No booking types yet</p>
+        <p class="empty-bookings-copy">
+          Use the + Add button to add a new booking type.
+        </p>
+      </div>
+
+      <template v-else>
+        <div
+          class="booking-type-tabs"
+          role="tablist"
+          aria-label="Booking types"
+        >
+          <div
+            v-for="item in enabledBookingTypes"
+            :key="item.type"
+            class="offer-tab-item"
+            :class="{ active: item.type === activeBookingType }"
+          >
+            <button
+              type="button"
+              class="offer-tab"
+              :aria-selected="item.type === activeBookingType"
+              @click="selectBookingType(item.type)"
+            >
+              {{ item.label }}
+            </button>
+            <button
+              type="button"
+              class="offer-tab-remove"
+              :aria-label="`Remove ${item.label}`"
+              @click.stop.prevent="disableBookingType(item.type)"
+            >
+              <UiIcon name="X" :size="14" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+
+        <div
+          v-if="activeBookingType === 'one_to_one'"
+          class="booking-type-panel"
+        >
+          <div class="booking-heading-fields">
+            <div class="form-group">
+              <label for="booking-heading-title">1:1 section title</label>
+              <input
+                id="booking-heading-title"
+                v-model="bookingHeadingTitle"
+                type="text"
+                placeholder="e.g. Book a session"
+                maxlength="100"
+              />
+            </div>
+            <div class="form-group">
+              <label for="booking-heading-description">Short intro</label>
+              <textarea
+                id="booking-heading-description"
+                v-model="bookingHeadingDescription"
+                rows="2"
+                maxlength="300"
+                placeholder="Help people understand what these sessions are for"
+              />
+            </div>
+          </div>
+
+          <div class="offer-editor-card">
+            <div class="section-heading">
+              <label class="section-label">1:1 offers</label>
+            </div>
+            <div class="offer-tabs-bar">
+              <div class="offer-tablist" role="tablist" aria-label="1:1 offers">
+                <div
+                  v-for="(offer, index) in bookingOffers"
+                  :key="offer.id"
+                  class="offer-tab-item"
+                  :class="{ active: offer.id === activeOfferId }"
+                >
+                  <button
+                    type="button"
+                    class="offer-tab"
+                    :aria-selected="offer.id === activeOfferId"
+                    @click="activeOfferId = offer.id"
+                  >
+                    {{ compactTabLabel(offer, `Offer ${index + 1}`) }}
+                  </button>
+                  <button
+                    v-if="bookingOffers.length > 1"
+                    type="button"
+                    class="offer-tab-remove"
+                    aria-label="Remove this offer"
+                    @click.stop.prevent="removeOffer(offer.id)"
+                  >
+                    <UiIcon name="X" :size="14" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="offer-tab-add"
+                @click.prevent.stop="addOffer"
+              >
+                <UiIcon name="Plus" :size="18" aria-hidden="true" />
+                <span>Add offer</span>
+              </button>
+            </div>
+
+            <div v-if="activeOffer" class="offer-tab-panel-body">
+              <div class="form-row offer-primary-row">
+                <div class="form-group offer-title-field">
+                  <label :for="`booking-offer-title-${activeOffer.id}`"
+                    >Title</label
+                  >
+                  <input
+                    :id="`booking-offer-title-${activeOffer.id}`"
+                    v-model="activeOfferTitle"
+                    type="text"
+                    maxlength="100"
+                    placeholder="e.g. 60-min private session"
+                  />
+                </div>
+
+                <div class="form-group offer-duration-field">
+                  <label :for="`booking-offer-duration-${activeOffer.id}`"
+                    >Duration</label
+                  >
+                  <select
+                    :id="`booking-offer-duration-${activeOffer.id}`"
+                    v-model="activeOfferDuration"
+                  >
+                    <option :value="15">15 minutes</option>
+                    <option :value="30">30 minutes</option>
+                    <option :value="45">45 minutes</option>
+                    <option :value="60">60 minutes</option>
+                    <option :value="75">75 minutes</option>
+                    <option :value="90">90 minutes</option>
+                    <option :value="120">120 minutes</option>
+                  </select>
+                </div>
+
+                <div class="form-group offer-price-field">
+                  <label class="offer-price-field-label">Price</label>
+                  <div class="offer-price-btns">
+                    <button
+                      type="button"
+                      class="offer-price-btn"
+                      :class="{ active: activeOfferPriceMode === 'free' }"
+                      @click="activeOfferPriceMode = 'free'"
+                    >
+                      Free
+                    </button>
+                    <button
+                      type="button"
+                      class="offer-price-btn"
+                      :class="{ active: activeOfferPriceMode === 'paid' }"
+                      @click="activeOfferPriceMode = 'paid'"
+                    >
+                      Paid
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label :for="`booking-offer-description-${activeOffer.id}`">
+                  Description
+                </label>
+                <BookingOfferDescriptionEditor
+                  :key="activeOffer.id"
+                  v-model="activeOfferDescription"
+                  :input-id="`booking-offer-description-${activeOffer.id}`"
+                  placeholder="Short description of what this session includes (links allowed)"
+                />
+              </div>
+
+              <div
+                v-if="activeOfferPriceMode === 'paid'"
+                class="pricing-editor"
+              >
+                <div class="form-row">
+                  <div class="form-group">
+                    <label :for="`booking-offer-price-${activeOffer.id}`"
+                      >Price</label
+                    >
+                    <input
+                      :id="`booking-offer-price-${activeOffer.id}`"
+                      v-model.number="activeOfferPriceAmount"
+                      type="number"
+                      min="5"
+                      step="1"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label :for="`booking-offer-currency-${activeOffer.id}`">
+                      Currency
+                    </label>
+                    <select
+                      :id="`booking-offer-currency-${activeOffer.id}`"
+                      v-model="activeOfferPriceCurrency"
+                    >
+                      <option value="USD">USD ($)</option>
+                      <option value="GBP">GBP (£)</option>
+                      <option value="EUR">EUR (€)</option>
+                      <option value="CAD">CAD (C$)</option>
+                      <option value="AUD">AUD (A$)</option>
+                      <option value="CHF">CHF (Fr.)</option>
+                      <option value="SGD">SGD (S$)</option>
+                      <option value="INR">INR (₹)</option>
+                      <option value="PKR">PKR (Rs)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Weekly windows apply to 1:1 only; classes use each class’s day & start time. -->
+          <div class="availability-section">
+            <div class="section-heading">
+              <label class="section-label">Availability</label>
+            </div>
+
+            <p class="field-hint">
+              When you’re open for private sessions. This does not apply to
+              classes or retreats — each has its own schedule in its tab.
+            </p>
+
+            <div class="availability-presets">
+              <button
+                type="button"
+                class="preset-btn"
+                @click="applyWeekdayPreset"
+              >
+                Weekdays 9-5
+              </button>
+              <button
+                type="button"
+                class="preset-btn"
+                @click="applyMorningsPreset"
+              >
+                Mornings only
+              </button>
+              <button
+                type="button"
+                class="preset-btn danger"
+                @click="clearAllAvailability"
+              >
+                Clear all
+              </button>
+            </div>
+
+            <div class="availability-grid">
+              <div v-for="day in days" :key="day.key" class="day-row">
+                <span class="day-label">{{ day.label }}</span>
+                <div class="day-windows">
+                  <template
+                    v-if="profile.booking.availability[day.key]?.length > 0"
+                  >
+                    <span
+                      v-for="(window, idx) in profile.booking.availability[
+                        day.key
+                      ]"
+                      :key="idx"
+                      class="time-window"
+                    >
+                      {{ window }}
+                    </span>
+                  </template>
+                  <span v-else class="no-availability">Not available</span>
+                </div>
+                <div class="day-actions">
+                  <button
+                    type="button"
+                    class="day-action-btn"
+                    @click="openDayEditor(day.key)"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    v-if="profile.booking.availability[day.key]?.length > 0"
+                    type="button"
+                    class="day-action-btn danger"
+                    @click="clearDayWindows(day.key)"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Buffer time</label>
+                <select v-model="bookingBufferTime">
+                  <option :value="0">No buffer</option>
+                  <option :value="5">5 minutes</option>
+                  <option :value="10">10 minutes</option>
+                  <option :value="15">15 minutes</option>
+                  <option :value="30">30 minutes</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Timezone</label>
+                <select v-model="bookingTimezone">
+                  <option
+                    v-for="tz in timezoneOptions"
+                    :key="tz.value"
+                    :value="tz.value"
+                  >
+                    {{ tz.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-else-if="activeBookingType === 'class'"
+          class="booking-type-panel"
+        >
+          <div class="offer-editor-card">
+            <div class="section-heading">
+              <label class="section-label">Classes</label>
+            </div>
+            <div class="offer-tabs-bar">
+              <div class="offer-tablist" role="tablist" aria-label="Classes">
+                <div
+                  v-for="(offer, index) in classOffers"
+                  :key="offer.id"
+                  class="offer-tab-item"
+                  :class="{ active: offer.id === activeClassOfferId }"
+                >
+                  <button
+                    type="button"
+                    class="offer-tab"
+                    :aria-selected="offer.id === activeClassOfferId"
+                    @click="activeClassOfferId = offer.id"
+                  >
+                    {{ compactTabLabel(offer, `Class ${index + 1}`) }}
+                  </button>
+                  <button
+                    v-if="classOffers.length > 1"
+                    type="button"
+                    class="offer-tab-remove"
+                    aria-label="Remove this class"
+                    @click.stop.prevent="removeClassOffer(offer.id)"
+                  >
+                    <UiIcon name="X" :size="14" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="offer-tab-add"
+                @click.prevent.stop="addClassOffer"
+              >
+                <UiIcon name="Plus" :size="18" aria-hidden="true" />
+                <span>Add class</span>
+              </button>
+            </div>
+
+            <div v-if="activeClassOffer" class="offer-tab-panel-body">
+              <div class="form-row offer-primary-row">
+                <div class="form-group offer-title-field">
+                  <label :for="`class-offer-title-${activeClassOffer.id}`"
+                    >Title</label
+                  >
+                  <input
+                    :id="`class-offer-title-${activeClassOffer.id}`"
+                    v-model="activeClassOfferTitle"
+                    type="text"
+                    maxlength="100"
+                    placeholder="e.g. Tuesday Evening Yoga"
+                  />
+                </div>
+
+                <div class="form-group offer-duration-field">
+                  <label :for="`class-offer-duration-${activeClassOffer.id}`">
+                    Duration
+                  </label>
+                  <select
+                    :id="`class-offer-duration-${activeClassOffer.id}`"
+                    v-model="activeClassOfferDuration"
+                  >
+                    <option :value="15">15 minutes</option>
+                    <option :value="30">30 minutes</option>
+                    <option :value="45">45 minutes</option>
+                    <option :value="60">60 minutes</option>
+                    <option :value="75">75 minutes</option>
+                    <option :value="90">90 minutes</option>
+                    <option :value="120">120 minutes</option>
+                  </select>
+                </div>
+
+                <div class="form-group offer-price-field">
+                  <label class="offer-price-field-label">Price</label>
+                  <div class="offer-price-btns">
+                    <button
+                      type="button"
+                      class="offer-price-btn"
+                      :class="{ active: activeClassOfferPriceMode === 'free' }"
+                      @click="activeClassOfferPriceMode = 'free'"
+                    >
+                      Free
+                    </button>
+                    <button
+                      type="button"
+                      class="offer-price-btn"
+                      :class="{ active: activeClassOfferPriceMode === 'paid' }"
+                      @click="activeClassOfferPriceMode = 'paid'"
+                    >
+                      Paid
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label :for="`class-offer-description-${activeClassOffer.id}`">
+                  Description
+                </label>
+                <BookingOfferDescriptionEditor
+                  :key="activeClassOffer.id"
+                  v-model="activeClassOfferDescription"
+                  :input-id="`class-offer-description-${activeClassOffer.id}`"
+                  placeholder="What this class is like — link to another page for full details"
+                />
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label :for="`class-offer-weekday-${activeClassOffer.id}`">
+                    Day
+                  </label>
+                  <select
+                    :id="`class-offer-weekday-${activeClassOffer.id}`"
+                    v-model="activeClassOfferWeekday"
+                  >
+                    <option
+                      v-for="weekday in weekdayOptions"
+                      :key="weekday.value"
+                      :value="weekday.value"
+                    >
+                      {{ weekday.label }}
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label :for="`class-offer-start-time-${activeClassOffer.id}`">
+                    Starts at
+                  </label>
+                  <input
+                    :id="`class-offer-start-time-${activeClassOffer.id}`"
+                    v-model="activeClassOfferStartTime"
+                    type="time"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label :for="`class-offer-frequency-${activeClassOffer.id}`">
+                    Repeats
+                  </label>
+                  <select
+                    :id="`class-offer-frequency-${activeClassOffer.id}`"
+                    v-model="activeClassOfferFrequency"
+                  >
+                    <option value="weekly">Weekly</option>
+                    <option value="biweekly">Every 2 weeks</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label :for="`class-offer-timezone-${activeClassOffer.id}`">
+                    Timezone
+                  </label>
+                  <select
+                    :id="`class-offer-timezone-${activeClassOffer.id}`"
+                    v-model="activeClassOfferTimezone"
+                  >
+                    <option
+                      v-for="tz in timezoneOptions"
+                      :key="tz.value"
+                      :value="tz.value"
+                    >
+                      {{ tz.label }}
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label class="checkbox-inline">
+                    <input
+                      v-model="activeClassCapacityEnabled"
+                      type="checkbox"
+                    />
+                    <span>Use space limit</span>
+                  </label>
+                  <input
+                    v-if="activeClassCapacityEnabled"
+                    v-model.number="activeClassCapacity"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="Spaces"
+                  />
+                </div>
+              </div>
+
+              <div
+                v-if="activeClassOfferPriceMode === 'paid'"
+                class="pricing-editor"
+              >
+                <div class="form-row">
+                  <div class="form-group">
+                    <label :for="`class-offer-price-${activeClassOffer.id}`"
+                      >Price</label
+                    >
+                    <input
+                      :id="`class-offer-price-${activeClassOffer.id}`"
+                      v-model.number="activeClassOfferPriceAmount"
+                      type="number"
+                      min="5"
+                      step="1"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label :for="`class-offer-currency-${activeClassOffer.id}`">
+                      Currency
+                    </label>
+                    <select
+                      :id="`class-offer-currency-${activeClassOffer.id}`"
+                      v-model="activeClassOfferPriceCurrency"
+                    >
+                      <option value="USD">USD ($)</option>
+                      <option value="GBP">GBP (£)</option>
+                      <option value="EUR">EUR (€)</option>
+                      <option value="CAD">CAD (C$)</option>
+                      <option value="AUD">AUD (A$)</option>
+                      <option value="CHF">CHF (Fr.)</option>
+                      <option value="SGD">SGD (S$)</option>
+                      <option value="INR">INR (₹)</option>
+                      <option value="PKR">PKR (Rs)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-else-if="activeBookingType === 'retreat'"
+          class="booking-type-panel"
+        >
+          <div class="offer-editor-card">
+            <div class="section-heading">
+              <label class="section-label">Retreats</label>
+            </div>
+            <div class="offer-tabs-bar">
+              <div class="offer-tablist" role="tablist" aria-label="Retreats">
+                <div
+                  v-for="(offer, index) in retreatOffers"
+                  :key="offer.id"
+                  class="offer-tab-item"
+                  :class="{ active: offer.id === activeRetreatOfferId }"
+                >
+                  <button
+                    type="button"
+                    class="offer-tab"
+                    :aria-selected="offer.id === activeRetreatOfferId"
+                    @click="activeRetreatOfferId = offer.id"
+                  >
+                    {{ compactTabLabel(offer, `Retreat ${index + 1}`) }}
+                  </button>
+                  <button
+                    v-if="retreatOffers.length > 1"
+                    type="button"
+                    class="offer-tab-remove"
+                    aria-label="Remove this retreat"
+                    @click.stop.prevent="removeRetreatOffer(offer.id)"
+                  >
+                    <UiIcon name="X" :size="14" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="offer-tab-add"
+                @click.prevent.stop="addRetreatOffer"
+              >
+                <UiIcon name="Plus" :size="18" aria-hidden="true" />
+                <span>Add retreat</span>
+              </button>
+            </div>
+
+            <div v-if="activeRetreatOffer" class="offer-tab-panel-body">
+              <div class="form-row offer-primary-row">
+                <div class="form-group offer-title-field">
+                  <label :for="`retreat-offer-title-${activeRetreatOffer.id}`"
+                    >Title</label
+                  >
+                  <input
+                    :id="`retreat-offer-title-${activeRetreatOffer.id}`"
+                    v-model="activeRetreatOfferTitle"
+                    type="text"
+                    maxlength="100"
+                    placeholder="e.g. Spring weekend immersion"
+                  />
+                </div>
+
+                <div class="form-group offer-duration-field">
+                  <label
+                    :for="`retreat-duration-days-${activeRetreatOffer.id}`"
+                  >
+                    Duration (days, derived)
+                  </label>
+                  <input
+                    :id="`retreat-duration-days-${activeRetreatOffer.id}`"
+                    :value="activeRetreatDurationDays"
+                    type="number"
+                    min="1"
+                    step="1"
+                    readonly
+                  />
+                </div>
+
+                <div class="form-group offer-price-field">
+                  <label class="offer-price-field-label">Price</label>
+                  <div class="offer-price-btns">
+                    <button
+                      type="button"
+                      class="offer-price-btn"
+                      :class="{
+                        active: activeRetreatOfferPriceMode === 'free',
+                      }"
+                      @click="activeRetreatOfferPriceMode = 'free'"
+                    >
+                      Free
+                    </button>
+                    <button
+                      type="button"
+                      class="offer-price-btn"
+                      :class="{
+                        active: activeRetreatOfferPriceMode === 'paid',
+                      }"
+                      @click="activeRetreatOfferPriceMode = 'paid'"
+                    >
+                      Paid
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label
+                  :for="`retreat-offer-description-${activeRetreatOffer.id}`"
+                >
+                  Description
+                </label>
+                <BookingOfferDescriptionEditor
+                  :key="activeRetreatOffer.id"
+                  v-model="activeRetreatOfferDescription"
+                  :input-id="`retreat-offer-description-${activeRetreatOffer.id}`"
+                  placeholder="What’s included — meals, lodging, schedule, etc."
+                />
+              </div>
+
+              <p class="field-hint">
+                Start and end use calendar dates and times in the retreat’s
+                timezone (for booking and reminders).
+              </p>
+
+              <div class="form-row retreat-schedule-row">
+                <div class="form-group">
+                  <label :for="`retreat-start-date-${activeRetreatOffer.id}`">
+                    Start date
+                  </label>
+                  <input
+                    :id="`retreat-start-date-${activeRetreatOffer.id}`"
+                    v-model="activeRetreatStartDate"
+                    type="date"
+                  />
+                </div>
+                <div class="form-group retreat-schedule-time">
+                  <label :for="`retreat-start-time-${activeRetreatOffer.id}`">
+                    Start time
+                  </label>
+                  <input
+                    :id="`retreat-start-time-${activeRetreatOffer.id}`"
+                    v-model="activeRetreatStartTime"
+                    type="time"
+                  />
+                </div>
+                <div class="form-group">
+                  <label :for="`retreat-end-date-${activeRetreatOffer.id}`">
+                    End date
+                  </label>
+                  <input
+                    :id="`retreat-end-date-${activeRetreatOffer.id}`"
+                    v-model="activeRetreatEndDate"
+                    type="date"
+                  />
+                </div>
+                <div class="form-group retreat-schedule-time">
+                  <label :for="`retreat-end-time-${activeRetreatOffer.id}`">
+                    End time
+                  </label>
+                  <input
+                    :id="`retreat-end-time-${activeRetreatOffer.id}`"
+                    v-model="activeRetreatEndTime"
+                    type="time"
+                  />
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label
+                    :for="`retreat-offer-timezone-${activeRetreatOffer.id}`"
+                  >
+                    Timezone
+                  </label>
+                  <select
+                    :id="`retreat-offer-timezone-${activeRetreatOffer.id}`"
+                    v-model="activeRetreatOfferTimezone"
+                  >
+                    <option
+                      v-for="tz in timezoneOptions"
+                      :key="tz.value"
+                      :value="tz.value"
+                    >
+                      {{ tz.label }}
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label class="checkbox-inline">
+                    <input
+                      v-model="activeRetreatCapacityEnabled"
+                      type="checkbox"
+                    />
+                    <span>Use space limit</span>
+                  </label>
+                  <input
+                    v-if="activeRetreatCapacityEnabled"
+                    v-model.number="activeRetreatCapacity"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="Spaces"
+                  />
+                </div>
+              </div>
+
+              <div
+                v-if="activeRetreatOfferPriceMode === 'paid'"
+                class="pricing-editor"
+              >
+                <div class="form-row">
+                  <div class="form-group">
+                    <label :for="`retreat-offer-price-${activeRetreatOffer.id}`"
+                      >Price</label
+                    >
+                    <input
+                      :id="`retreat-offer-price-${activeRetreatOffer.id}`"
+                      v-model.number="activeRetreatOfferPriceAmount"
+                      type="number"
+                      min="5"
+                      step="1"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label
+                      :for="`retreat-offer-currency-${activeRetreatOffer.id}`"
+                    >
+                      Currency
+                    </label>
+                    <select
+                      :id="`retreat-offer-currency-${activeRetreatOffer.id}`"
+                      v-model="activeRetreatOfferPriceCurrency"
+                    >
+                      <option value="USD">USD ($)</option>
+                      <option value="GBP">GBP (£)</option>
+                      <option value="EUR">EUR (€)</option>
+                      <option value="CAD">CAD (C$)</option>
+                      <option value="AUD">AUD (A$)</option>
+                      <option value="CHF">CHF (Fr.)</option>
+                      <option value="SGD">SGD (S$)</option>
+                      <option value="INR">INR (₹)</option>
+                      <option value="PKR">PKR (Rs)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="monetize-section">
+          <label class="section-label">Payments</label>
+          <p class="subsection-desc">
+            Connect Stripe when you want to charge for paid sessions, classes,
+            or retreats.
+            <strong> Keep 100%</strong> (minus Stripe fees).
+          </p>
+
+          <template v-if="stripeConnectStatus === 'active'">
+            <label class="checkbox-row payments-checkbox-row">
+              <input
+                v-model="bookingFlexiblePricingEnabled"
+                type="checkbox"
+                :disabled="!hasPaidBookingItems"
+              />
+              <span class="checkbox-label">Allow flexible pricing</span>
+            </label>
+            <p class="field-hint">
+              <template v-if="hasPaidBookingItems">
+                When enabled, visitors can choose their amount from your base
+                price upward.
+              </template>
+              <template v-else>
+                Set at least one session, class, or retreat to paid to enable
+                payment settings.
+              </template>
+            </p>
+          </template>
+
+          <WizardStripeConnectPanel
+            :bordered="false"
+            id-prefix="bookings-stripe"
+            connected-hint="You're ready to accept payments. Configure pricing above."
+            @update:connect-status="onStripeConnectStatusUpdate"
+          />
+        </div>
+      </template>
+    </div>
+
+    <div v-if="editingDay" class="modal-overlay" @click.self="cancelDayEdit">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>
+            Edit {{ editingDay.charAt(0).toUpperCase() + editingDay.slice(1) }}
+          </h3>
+          <button class="modal-close" type="button" @click="cancelDayEdit">
+            <UiIcon name="X" :size="18" aria-hidden="true" />
+          </button>
+        </div>
+        <div class="modal-content">
+          <div class="form-group">
+            <label>Time windows</label>
+            <input
+              v-model="editingWindows"
+              type="text"
+              placeholder="09:00-12:00, 14:00-17:00"
+            />
+            <p class="field-hint">
+              Enter time windows separated by commas. Format: HH:MM-HH:MM
+            </p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn secondary" type="button" @click="cancelDayEdit">
+            Cancel
+          </button>
+          <button class="btn primary" type="button" @click="saveDayWindows">
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.step-bookings h2 {
+  font-size: 28px;
+  margin-bottom: 8px;
+}
+
+.section-desc,
+.subsection-desc,
+.field-hint,
+.empty-bookings-copy {
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+
+.section-desc {
+  margin-bottom: 24px;
+}
+
+.config-fields {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.config-fields > div:first-of-type {
+  padding: 10px 10px 0;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-label {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 6px;
+}
+
+.type-actions,
+.add-type-menu-wrap {
+  position: relative;
+}
+
+.type-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 10;
+  min-width: 180px;
+  padding: 6px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+}
+
+.type-dropdown-item {
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.type-dropdown-item:hover:not(.disabled) {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.type-dropdown-item.disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.empty-bookings-state,
+.availability-section,
+.monetize-section {
+  padding: 20px;
+  border-top: 1px solid var(--color-border);
+}
+
+.offer-editor-card {
+  padding: 0 20px;
+}
+
+.booking-heading-fields {
+  padding: 0 20px;
+}
+
+.empty-bookings-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.booking-type-tabs,
+.offer-tabs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* Top-level 1:1 / Classes: reads as a tab row (underline), not floating pill buttons */
+.booking-type-tabs {
+  gap: 4px;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 2px;
+}
+
+.booking-type-tabs .offer-tab-item {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  margin-bottom: -1px;
+}
+
+.booking-type-tabs .offer-tab-item:not(.active) {
+  border-bottom: 2px solid transparent;
+}
+
+.booking-type-tabs .offer-tab-item.active {
+  background: transparent;
+  border-bottom: 2px solid var(--color-text);
+}
+
+.booking-type-tabs .offer-tab-item:not(.active) .offer-tab,
+.booking-type-tabs .offer-tab-item:not(.active) .offer-tab-remove {
+  color: var(--color-text-muted);
+}
+
+.booking-type-tabs .offer-tab-item.active .offer-tab,
+.booking-type-tabs .offer-tab-item.active .offer-tab-remove {
+  color: var(--color-text);
+}
+
+.offer-tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+}
+
+.offer-tab-item {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.offer-tabs-bar .offer-tab-item.active {
+  background: #232428;
+  border-color: #232428;
+}
+
+.offer-tab {
+  border: none;
+  background: transparent;
+  padding: 8px 12px;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.offer-tabs-bar .offer-tab-item.active .offer-tab,
+.offer-tabs-bar .offer-tab-item.active .offer-tab-remove {
+  color: #fff;
+}
+
+.offer-tab-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.offer-tab-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.booking-type-panel,
+.offer-tab-panel-body {
+  margin-top: 18px;
+}
+
+.booking-heading-fields,
+.pricing-editor {
+  margin-top: 16px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+/* Retreat start/end: one row; compact time columns so dates + times fit */
+.form-row.retreat-schedule-row {
+  grid-template-columns:
+    minmax(0, 1fr) minmax(5.75rem, 6.75rem) minmax(0, 1fr)
+    minmax(5.75rem, 6.75rem);
+  gap: 12px;
+  align-items: end;
+}
+
+.form-row.retreat-schedule-row .retreat-schedule-time input[type="time"] {
+  width: 100%;
+  max-width: 6.75rem;
+  padding-inline: 10px;
+}
+
+.offer-primary-row {
+  align-items: end;
+}
+
+.offer-title-field {
+  grid-column: span 1;
+}
+
+.form-group {
+  margin-bottom: 12px;
+}
+
+.form-group label,
+.offer-price-field-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  margin-bottom: 6px;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group input[type="date"],
+.form-group input[type="time"],
+.form-group textarea,
+.form-group select {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: inherit;
+}
+
+.form-group textarea {
+  resize: vertical;
+}
+
+.offer-price-btns {
+  display: flex;
+  min-height: 42px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.offer-price-btn {
+  flex: 1;
+  border: none;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.offer-price-btn + .offer-price-btn {
+  border-left: 1px solid var(--color-border);
+}
+
+.offer-price-btn.active {
+  background: #232428;
+  color: #fff;
+}
+
+.availability-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.preset-btn,
+.day-action-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.preset-btn.danger,
+.day-action-btn.danger {
+  color: #a33;
+}
+
+.availability-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.availability-section > .form-row {
+  margin-top: 24px;
+}
+
+.day-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+}
+
+.day-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.day-windows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.time-window {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.no-availability {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
+.day-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.checkbox-row,
+.checkbox-inline {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-label {
+  font-size: 14px;
+  color: var(--color-text);
+}
+
+.payments-checkbox-row {
+  margin: 12px 0 6px;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 20;
+}
+
+.modal {
+  width: min(100%, 480px);
+  background: var(--color-bg);
+  border-radius: 14px;
+  border: 1px solid var(--color-border);
+}
+
+.modal-header,
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.modal-content {
+  padding: 0 18px 18px;
+}
+
+.modal-close {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--color-text);
+}
+
+.btn {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  cursor: pointer;
+}
+
+.btn.primary {
+  background: var(--color-text);
+  color: var(--color-bg);
+  border-color: var(--color-text);
+}
+
+@media (max-width: 720px) {
+  .form-row:not(.retreat-schedule-row),
+  .day-row {
+    grid-template-columns: 1fr;
+  }
+
+  .form-row.retreat-schedule-row {
+    grid-template-columns: 1fr;
+  }
+
+  .day-actions {
+    justify-content: flex-start;
+  }
+}
+</style>

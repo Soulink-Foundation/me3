@@ -28,12 +28,16 @@ pnpm --filter @me3-core/worker db:migrate:local
 pnpm verify:local-boot
 pnpm build
 pnpm --filter @me3-core/worker dev
-pnpm --filter @me3-core/web dev
+pnpm --filter @me3/web dev
 ```
 
 `pnpm setup:dev-vars` creates `apps/worker/.dev.vars` with generated local-only bootstrap values. Never commit real secrets.
 
 `pnpm verify:local-boot` is the extraction acceptance gate for the first slice. It applies the local D1 migration, starts the Worker and web shell, checks `/health`, `/api/config`, `/api/admin/bootstrap`, `/api/assistant/chat`, `/.well-known/me.json`, and verifies that the web shell responds.
+
+## Web UI
+
+The Core OSS web app is copied from `me3-app` rather than redesigned from scratch. Calendar, email, sites, and settings use the existing ME3 Vue/Vite UI as the base. `/assistant` is intentionally a placeholder for now, with the existing side navigation entry pointing at it.
 
 ## Install Config
 

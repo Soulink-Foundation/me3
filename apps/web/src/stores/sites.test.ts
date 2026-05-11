@@ -1,0 +1,713 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { setActivePinia, createPinia } from "pinia";
+import { useSitesStore } from "./sites";
+import { api } from "../api";
+import { ApiError } from "../api";
+
+// Mock the API client
+vi.mock("../api", () => ({
+  api: {
+    get: vi.fn(),
+    post: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn(),
+    upload: vi.fn(),
+  },
+  ApiError: class extends Error {
+    status: number;
+    constructor(message: string, status: number) {
+      super(message);
+      this.status = status;
+    }
+  },
+}));
+
+describe("sites store", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  describe("resetSessionState", () => {
+    it("clears session-scoped site data", () => {
+      const store = useSitesStore();
+      store.sites = [
+        {
+          id: "1",
+          username: "testuser",
+          user_id: "user1",
+          custom_domain: null,
+          custom_domain_status: null,
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          published_at: null,
+        },
+      ];
+      store.loading = true;
+      store.error = "boom";
+      store.billingStatusSnapshot = {
+        tier: "starter",
+        capabilities: {
+          maxSites: 1,
+          customDomain: true,
+          footerCustomization: true,
+          emailSendQuota: 0,
+          emailOverageRate: 0,
+          financialLedger: false,
+          mailboxAlias: false,
+          agentInbox: false,
+          approvalFirstOutbound: false,
+          shopEnabled: false,
+          newsletterSignup: true,
+          bookingsEnabled: true,
+          importFromUrl: true,
+          agentEnabled: false,
+          telegramAgentAccess: false,
+          notificationDelivery: true,
+          bookingReminders: true,
+          agentJobs: false,
+          agentJobsLimit: 0,
+        },
+        is_pro: false,
+        is_paid: true,
+      };
+
+      store.resetSessionState();
+
+      expect(store.sites).toEqual([]);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBeNull();
+      expect(store.billingStatusSnapshot).toBeNull();
+    });
+  });
+
+  describe("fetchSites", () => {
+    it("should fetch sites successfully", async () => {
+      const mockSites = [
+        {
+          id: "1",
+          username: "testuser",
+          user_id: "user1",
+          custom_domain: null,
+          custom_domain_status: null,
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          published_at: null,
+        },
+      ];
+      vi.mocked(api.get).mockResolvedValue({ sites: mockSites });
+
+      const store = useSitesStore();
+      await store.fetchSites();
+
+      expect(store.sites).toEqual(mockSites);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBeNull();
+      expect(api.get).toHaveBeenCalledWith("/sites");
+    });
+
+    it("should handle fetch errors", async () => {
+      vi.mocked(api.get).mockRejectedValue(new Error("Network error"));
+
+      const store = useSitesStore();
+      await store.fetchSites();
+
+      expect(store.sites).toEqual([]);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBe("Failed to load sites");
+    });
+  });
+
+  describe("fetchPublishManifest", () => {
+    it("should fetch publish manifest successfully", async () => {
+      const mockManifest = {
+        version: 1 as const,
+        sourceFiles: { "me.json": "abc123" },
+        assetFiles: { "avatar.jpg": "def456" },
+        updatedAt: "2026-03-13T10:00:00.000Z",
+      };
+      vi.mocked(api.get).mockResolvedValue({ manifest: mockManifest });
+
+      const store = useSitesStore();
+      const result = await store.fetchPublishManifest("testuser");
+
+      expect(result).toEqual(mockManifest);
+      expect(api.get).toHaveBeenCalledWith("/sites/testuser/publish-manifest");
+    });
+  });
+
+  describe("sendProductConfirmationTest", () => {
+    it("should post the product confirmation draft to the test-send endpoint", async () => {
+      vi.mocked(api.post).mockResolvedValue({
+        ok: true,
+        sentTo: "owner@example.com",
+        subject: "[Test] Your download",
+        productSlug: "guide",
+        preview: {
+          buyerName: "Test Buyer",
+          buyerNote: "Looking forward to this.",
+          productTitle: "Guide",
+          siteName: "ME3",
+          supportEmail: "owner@example.com",
+        },
+      });
+
+      const store = useSitesStore();
+      const payload = {
+        productSlug: "guide",
+        productTitle: "Guide",
+        siteName: "ME3",
+        subject: "Your download",
+        message: "Here it is: https://example.com/file",
+      };
+
+      const result = await store.sendProductConfirmationTest("testuser", payload);
+
+      expect(result).toMatchObject({
+        ok: true,
+        sentTo: "owner@example.com",
+        subject: "[Test] Your download",
+      });
+      expect(api.post).toHaveBeenCalledWith(
+        "/sites/testuser/products/confirmation-email/test",
+        payload,
+      );
+    });
+  });
+
+  describe("claimUsername", () => {
+    it("should claim username successfully", async () => {
+      const mockSite = {
+        id: "1",
+        username: "newuser",
+        user_id: "user1",
+        custom_domain: null,
+        custom_domain_status: null,
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        published_at: null,
+      };
+      vi.mocked(api.post).mockResolvedValue({ site: mockSite });
+
+      const store = useSitesStore();
+      const result = await store.claimUsername("newuser");
+
+      expect(result).toEqual(mockSite);
+      expect(store.sites).toContainEqual(mockSite);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBeNull();
+      expect(api.post).toHaveBeenCalledWith("/sites", { username: "newuser" });
+    });
+
+    it("should normalize full domain usernames", async () => {
+      const mockSite = {
+        id: "2",
+        username: "business-coach",
+        user_id: "user2",
+        custom_domain: null,
+        custom_domain_status: null,
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        published_at: null,
+      };
+      vi.mocked(api.post).mockResolvedValue({ site: mockSite });
+
+      const store = useSitesStore();
+      const result = await store.claimUsername("business-coach.me3.app");
+
+      expect(result).toEqual(mockSite);
+      expect(api.post).toHaveBeenCalledWith("/sites", {
+        username: "business-coach",
+      });
+    });
+
+    it("should handle claim errors", async () => {
+      vi.mocked(api.post).mockRejectedValue(
+        new ApiError("Username taken", 409),
+      );
+
+      const store = useSitesStore();
+      const result = await store.claimUsername("taken");
+
+      expect(result).toBeNull();
+      expect(store.loading).toBe(false);
+      expect(store.error).toBe("Username taken");
+    });
+
+    it("should pass profile rename options when provided", async () => {
+      const mockSite = {
+        id: "3",
+        username: "newuser",
+        user_id: "user1",
+        site_type: "profile" as const,
+        custom_domain: null,
+        custom_domain_status: null,
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        published_at: null,
+      };
+      vi.mocked(api.post).mockResolvedValue({ site: mockSite });
+
+      const store = useSitesStore();
+      const result = await store.claimUsername("newuser", {
+        siteType: "profile",
+        renameFromUsername: "olduser",
+      });
+
+      expect(result).toEqual(mockSite);
+      expect(api.post).toHaveBeenCalledWith("/sites", {
+        username: "newuser",
+        siteType: "profile",
+        templateId: undefined,
+        renameFromUsername: "olduser",
+      });
+    });
+  });
+
+  describe("uploadSite", () => {
+    it("should upload site files successfully", async () => {
+      const files = [
+        new File(["content"], "me.json", { type: "application/json" }),
+        new File(["content"], "index.html", { type: "text/html" }),
+      ];
+      vi.mocked(api.upload).mockResolvedValue({ ok: true });
+
+      const store = useSitesStore();
+      store.sites = [
+        {
+          id: "1",
+          username: "testuser",
+          user_id: "user1",
+          custom_domain: null,
+          custom_domain_status: null,
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          published_at: null,
+        },
+      ];
+
+      const result = await store.uploadSite("testuser", files);
+
+      expect(result).toBe(true);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBeNull();
+      expect(store.sites[0].published_at).toBeTruthy();
+      expect(api.upload).toHaveBeenCalledWith(
+        "/sites/testuser/upload",
+        expect.any(FormData),
+      );
+    });
+
+    it("should handle upload errors", async () => {
+      const files = [
+        new File(["content"], "me.json", { type: "application/json" }),
+      ];
+      vi.mocked(api.upload).mockRejectedValue(
+        new ApiError("Upload failed", 500),
+      );
+
+      const store = useSitesStore();
+      const result = await store.uploadSite("testuser", files);
+
+      expect(result).toBe(false);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBe("Upload failed");
+    });
+  });
+
+  describe("deleteSite", () => {
+    it("should delete site successfully", async () => {
+      vi.mocked(api.delete).mockResolvedValue({ ok: true });
+
+      const store = useSitesStore();
+      store.sites = [
+        {
+          id: "1",
+          username: "testuser",
+          user_id: "user1",
+          custom_domain: null,
+          custom_domain_status: null,
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          published_at: null,
+        },
+      ];
+
+      const result = await store.deleteSite("testuser");
+
+      expect(result).toBe(true);
+      expect(store.sites).toHaveLength(0);
+      expect(store.loading).toBe(false);
+      expect(api.delete).toHaveBeenCalledWith("/sites/testuser");
+    });
+
+    it("should handle delete errors", async () => {
+      vi.mocked(api.delete).mockRejectedValue(new ApiError("Not found", 404));
+
+      const store = useSitesStore();
+      const result = await store.deleteSite("nonexistent");
+
+      expect(result).toBe(false);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBe("Not found");
+    });
+  });
+
+  describe("uploadImage", () => {
+    it("should upload avatar image successfully", async () => {
+      const blob = new Blob(["image data"], { type: "image/png" });
+      const mockResult = {
+        ok: true,
+        path: "/files/avatar.png",
+        url: "https://example.com/files/avatar.png",
+        type: "avatar" as const,
+      };
+      vi.mocked(api.upload).mockResolvedValue(mockResult);
+
+      const store = useSitesStore();
+      const result = await store.uploadImage("testuser", blob, "avatar");
+
+      expect(result).toEqual(mockResult);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBeNull();
+      expect(api.upload).toHaveBeenCalledWith(
+        "/sites/testuser/upload-image",
+        expect.any(FormData),
+      );
+    });
+
+    it("should upload banner image successfully", async () => {
+      const blob = new Blob(["image data"], { type: "image/jpeg" });
+      const mockResult = {
+        ok: true,
+        path: "/files/banner.jpg",
+        url: "https://example.com/files/banner.jpg",
+        type: "banner" as const,
+      };
+      vi.mocked(api.upload).mockResolvedValue(mockResult);
+
+      const store = useSitesStore();
+      const result = await store.uploadImage("testuser", blob, "banner");
+
+      expect(result).toEqual(mockResult);
+    });
+
+    it("should handle upload image errors", async () => {
+      const blob = new Blob(["image data"], { type: "image/png" });
+      vi.mocked(api.upload).mockRejectedValue(
+        new ApiError("File too large", 413),
+      );
+
+      const store = useSitesStore();
+      const result = await store.uploadImage("testuser", blob, "avatar");
+
+      expect(result).toBeNull();
+      expect(store.loading).toBe(false);
+      expect(store.error).toBe("File too large");
+    });
+  });
+
+  describe("importWebsite", () => {
+    it("should import website drafts successfully", async () => {
+      const mockDraft = {
+        ok: true,
+        sourceUrl: "https://example.com",
+        canonicalUrl: "https://example.com",
+        profile: {
+          name: "Example",
+        },
+        pages: [],
+        posts: [],
+        products: [],
+      };
+      vi.mocked(api.post).mockResolvedValue(mockDraft as any);
+
+      const store = useSitesStore();
+      const result = await store.importWebsite("testuser", "https://example.com");
+
+      expect(result).toEqual(mockDraft);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBeNull();
+      expect(api.post).toHaveBeenCalledWith(
+        "/sites/testuser/import-website",
+        { url: "https://example.com" },
+      );
+    });
+
+    it("should surface import errors", async () => {
+      vi.mocked(api.post).mockRejectedValue(new ApiError("Import denied", 403));
+
+      const store = useSitesStore();
+      const result = await store.importWebsite("testuser", "https://example.com");
+
+      expect(result).toBeNull();
+      expect(store.loading).toBe(false);
+      expect(store.error).toBe("Import denied");
+    });
+  });
+
+  describe("uploadPageImage", () => {
+    it("should upload page image successfully", async () => {
+      const blob = new Blob(["image data"], { type: "image/png" });
+      const mockResult = {
+        ok: true,
+        path: "/files/about-0.png",
+        url: "https://example.com/files/about-0.png",
+        pageSlug: "about",
+        imageIndex: 0,
+      };
+      vi.mocked(api.upload).mockResolvedValue(mockResult);
+
+      const store = useSitesStore();
+      const result = await store.uploadPageImage("testuser", blob, "about", 0);
+
+      expect(result).toEqual(mockResult);
+      expect(store.loading).toBe(false);
+      expect(store.error).toBeNull();
+    });
+
+    it("should handle different image formats", async () => {
+      const webpBlob = new Blob(["image data"], { type: "image/webp" });
+      const gifBlob = new Blob(["image data"], { type: "image/gif" });
+      const jpgBlob = new Blob(["image data"], { type: "image/jpeg" });
+
+      vi.mocked(api.upload).mockResolvedValue({
+        ok: true,
+        path: "",
+        url: "",
+        pageSlug: "test",
+        imageIndex: 0,
+      });
+
+      const store = useSitesStore();
+      await store.uploadPageImage("testuser", webpBlob, "test", 0);
+      await store.uploadPageImage("testuser", gifBlob, "test", 1);
+      await store.uploadPageImage("testuser", jpgBlob, "test", 2);
+
+      expect(api.upload).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe("domain management", () => {
+    it("should get domain status", async () => {
+      const mockStatus = {
+        connected: true,
+        domain: "example.com",
+        status: "active" as const,
+        ssl_status: "active",
+      };
+      vi.mocked(api.get).mockResolvedValue(mockStatus);
+
+      const store = useSitesStore();
+      const result = await store.getDomainStatus("testuser");
+
+      expect(result).toEqual(mockStatus);
+      expect(api.get).toHaveBeenCalledWith("/domains/testuser");
+    });
+
+    it("should connect domain successfully", async () => {
+      const mockResult = {
+        ok: true,
+        domain: "www.example.com",
+        status: "pending",
+        dns_records: {
+          cname: { name: "www.example.com", value: "target.example.com" },
+        },
+      };
+      vi.mocked(api.post).mockResolvedValue(mockResult);
+
+      const store = useSitesStore();
+      store.sites = [
+        {
+          id: "1",
+          username: "testuser",
+          user_id: "user1",
+          custom_domain: null,
+          custom_domain_status: null,
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          published_at: null,
+        },
+      ];
+
+      const result = await store.connectDomain("testuser", "www.example.com");
+
+      expect(result).toEqual(mockResult);
+      expect(store.sites[0].custom_domain).toBe("www.example.com");
+      expect(store.sites[0].custom_domain_status).toBe("pending");
+    });
+
+    it("should disconnect domain successfully", async () => {
+      vi.mocked(api.delete).mockResolvedValue({ ok: true });
+
+      const store = useSitesStore();
+      store.sites = [
+        {
+          id: "1",
+          username: "testuser",
+          user_id: "user1",
+          custom_domain: "example.com",
+          custom_domain_status: "active",
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          published_at: null,
+        },
+      ];
+
+      const result = await store.disconnectDomain("testuser");
+
+      expect(result).toBe(true);
+      expect(store.sites[0].custom_domain).toBeNull();
+      expect(store.sites[0].custom_domain_status).toBeNull();
+    });
+
+    it("should refresh domain status", async () => {
+      vi.mocked(api.post).mockResolvedValue({ ok: true });
+
+      const store = useSitesStore();
+      const result = await store.refreshDomainStatus("testuser");
+
+      expect(result).toBe(true);
+      expect(api.post).toHaveBeenCalledWith("/domains/testuser/refresh", {});
+    });
+  });
+
+  describe("billing", () => {
+    it("should get billing status", async () => {
+      const mockStatus = {
+        tier: "free" as const,
+        is_pro: false,
+      };
+      vi.mocked(api.get).mockResolvedValue(mockStatus);
+
+      const store = useSitesStore();
+      const result = await store.getBillingStatus();
+
+      expect(result).toEqual(mockStatus);
+      expect(api.get).toHaveBeenCalledWith("/billing/status");
+    });
+
+    it("should auto-sync billing when status is past_due", async () => {
+      const staleStatus = {
+        tier: "pro" as const,
+        status: "past_due" as const,
+        is_pro: false,
+      };
+      const syncedStatus = {
+        tier: "pro" as const,
+        status: "active" as const,
+        is_pro: true,
+      };
+      vi.mocked(api.get).mockResolvedValue(staleStatus);
+      vi.mocked(api.post).mockResolvedValue(syncedStatus);
+
+      const store = useSitesStore();
+      const result = await store.getBillingStatus();
+
+      expect(result).toEqual(syncedStatus);
+      expect(api.get).toHaveBeenCalledWith("/billing/status");
+      expect(api.post).toHaveBeenCalledWith("/billing/sync", {});
+    });
+
+    it("should fall back to stale status if auto-sync fails", async () => {
+      const staleStatus = {
+        tier: "pro" as const,
+        status: "past_due" as const,
+        is_pro: false,
+      };
+      vi.mocked(api.get).mockResolvedValue(staleStatus);
+      vi.mocked(api.post).mockRejectedValue(new Error("sync failed"));
+
+      const store = useSitesStore();
+      const result = await store.getBillingStatus();
+
+      expect(result).toEqual(staleStatus);
+      expect(api.post).toHaveBeenCalledWith("/billing/sync", {});
+    });
+
+    it("should start checkout with default tier (pro) and interval (year)", async () => {
+      const mockResult = { url: "https://checkout.example.com" };
+      vi.mocked(api.post).mockResolvedValue(mockResult);
+
+      const store = useSitesStore();
+      const result = await store.startCheckout();
+
+      expect(result).toBe("https://checkout.example.com");
+      expect(api.post).toHaveBeenCalledWith("/billing/checkout", {
+        tier: "pro",
+        interval: "year",
+      });
+    });
+
+    it("should start checkout with pro monthly billing", async () => {
+      const mockResult = { url: "https://checkout.pro.com" };
+      vi.mocked(api.post).mockResolvedValue(mockResult);
+
+      const store = useSitesStore();
+      const result = await store.startCheckout("pro", "month");
+
+      expect(result).toBe("https://checkout.pro.com");
+      expect(api.post).toHaveBeenCalledWith("/billing/checkout", {
+        tier: "pro",
+        interval: "month",
+      });
+    });
+
+    it("should open billing portal", async () => {
+      const mockResult = { url: "https://portal.example.com" };
+      vi.mocked(api.post).mockResolvedValue(mockResult);
+
+      const store = useSitesStore();
+      const result = await store.openBillingPortal();
+
+      expect(result).toBe("https://portal.example.com");
+    });
+
+    it("should sync billing status", async () => {
+      const mockStatus = {
+        tier: "pro" as const,
+        status: "active" as const,
+        is_pro: true,
+      };
+      vi.mocked(api.post).mockResolvedValue(mockStatus);
+
+      const store = useSitesStore();
+      const result = await store.syncBillingStatus();
+
+      expect(result).toEqual(mockStatus);
+    });
+  });
+
+  // Domain purchase tests removed - functionality not supported via Cloudflare API
+
+  describe("getSiteContent", () => {
+    it("should get site content successfully", async () => {
+      const mockContent = {
+        ok: true,
+        profile: {
+          version: "0.1",
+          name: "Test User",
+          handle: "testuser",
+          bio: "Test bio",
+        },
+        pages: [],
+      };
+      vi.mocked(api.get).mockResolvedValue(mockContent);
+
+      const store = useSitesStore();
+      const result = await store.getSiteContent("testuser");
+
+      expect(result).toEqual(mockContent);
+      expect(api.get).toHaveBeenCalledWith("/sites/testuser/content");
+    });
+
+    it("should handle errors gracefully", async () => {
+      vi.mocked(api.get).mockRejectedValue(new Error("Not found"));
+
+      const store = useSitesStore();
+      const result = await store.getSiteContent("nonexistent");
+
+      expect(result).toBeNull();
+    });
+  });
+});

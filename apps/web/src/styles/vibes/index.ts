@@ -1,0 +1,162 @@
+/**
+ * Vibes - CSS-only themes for me3 sites
+ *
+ * Each vibe is a complete visual identity with its own
+ * color palette, typography, and spacing.
+ */
+
+// Import CSS as raw strings for bundling
+import warmCss from "./warm.css?raw";
+import techCss from "./tech.css?raw";
+import retroCss from "./retro.css?raw";
+import naturalCss from "./natural.css?raw";
+import me3Css from "./me3.css?raw";
+
+export type VibeId =
+  | "warm"
+  | "tech"
+  | "retro"
+  | "natural"
+  | "me3";
+export type VibeMode = "light" | "dark";
+
+export interface VibePalette {
+  bg: string;
+  text: string;
+  textMuted: string;
+  border: string;
+  accent: string;
+}
+
+export interface Vibe {
+  id: VibeId;
+  name: string;
+  description: string;
+  css: string;
+  colors: VibePalette;
+  fontFamily: string;
+  mode: VibeMode;
+  fontUrl: string | null;
+}
+
+export const vibes: Record<VibeId, Vibe> = {
+  warm: {
+    id: "warm",
+    name: "warm",
+    description: "Cozy and personal, like a handwritten letter",
+    css: warmCss,
+    fontFamily: "Georgia, serif",
+    colors: {
+      bg: "#faf8f5",
+      text: "#2d2a26",
+      textMuted: "#6b6560",
+      border: "#e8e4df",
+      accent: "#2d2a26",
+    },
+    mode: "light",
+    fontUrl: null,
+  },
+  tech: {
+    id: "tech",
+    name: "tech",
+    description: "Terminal aesthetic for builders",
+    css: techCss,
+    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+    colors: {
+      bg: "#0a0a0a",
+      text: "#e0e0e0",
+      textMuted: "#9a9a9a",
+      border: "#2a2a2a",
+      accent: "#00ff88",
+    },
+    mode: "dark",
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap",
+  },
+  retro: {
+    id: "retro",
+    name: "retro",
+    description: "Pixel art vibes, 8-bit nostalgia",
+    css: retroCss,
+    fontFamily: "'Press Start 2P', monospace",
+    colors: {
+      bg: "#1a1a2e",
+      text: "#eaeaea",
+      textMuted: "#8888aa",
+      border: "#16213e",
+      accent: "#ff2a6d",
+    },
+    mode: "dark",
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap",
+  },
+  natural: {
+    id: "natural",
+    name: "natural",
+    description: "Botanical and airy, like a field journal",
+    css: naturalCss,
+    fontFamily: "'Fraunces', 'Cormorant Garamond', serif",
+    colors: {
+      bg: "#edf4ea",
+      text: "#233126",
+      textMuted: "#5d6b60",
+      border: "#c8d8c3",
+      accent: "#2f5d3a",
+    },
+    mode: "light",
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Fraunces:wght@500;700&family=Newsreader:wght@400;500;600&display=swap",
+  },
+  me3: {
+    id: "me3",
+    name: "me3",
+    description: "Clean white ME3 look with brand green accents",
+    css: me3Css,
+    fontFamily:
+      '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    colors: {
+      bg: "#ffffff",
+      text: "#232428",
+      textMuted: "#5d6368",
+      border: "rgba(35, 36, 40, 0.12)",
+      /* sRGB fallback for <input type="color"> (matches --brand-primary) */
+      accent: "#3d9b7c",
+    },
+    mode: "light",
+    fontUrl: null,
+  },
+};
+
+export const vibeIds = Object.keys(vibes) as VibeId[];
+export const selectableVibeIds: VibeId[] = ["warm", "tech", "me3"];
+export const legacyVibeIds: VibeId[] = ["retro", "natural"];
+export const defaultVibe: VibeId = "warm";
+
+/**
+ * Get the CSS for a vibe by ID
+ */
+export function getVibeCss(vibeId: VibeId): string {
+  return vibes[vibeId]?.css || vibes[defaultVibe].css;
+}
+
+/**
+ * Get vibe metadata by ID
+ */
+export function getVibe(vibeId: VibeId): Vibe {
+  return vibes[vibeId] || vibes[defaultVibe];
+}
+
+export function isVibeId(value: string): value is VibeId {
+  return vibeIds.includes(value as VibeId);
+}
+
+export function getVibeColorScheme(vibeId: VibeId): VibeMode {
+  return getVibe(vibeId).mode;
+}
+
+/**
+ * Get the Google Fonts URL for a vibe (if needed)
+ */
+export function getVibeFontUrl(vibeId: VibeId): string | null {
+  return getVibe(vibeId).fontUrl;
+}

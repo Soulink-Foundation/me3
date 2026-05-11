@@ -21,7 +21,7 @@ database_id = "replace-with-generated-d1-id"
 
 [vars]
 ENVIRONMENT = "local"
-CORE_WEB_ORIGIN = "http://localhost:5173"
+CORE_WEB_ORIGIN = "http://localhost:5174"
 CORE_API_ORIGIN = "http://localhost:8787"
 ME3_AI_DEFAULT_PROVIDER = "workers-ai"
 ME3_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"

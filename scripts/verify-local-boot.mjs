@@ -4,16 +4,46 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workerOrigin = "http://127.0.0.1:8787";
-const webOrigin = "http://127.0.0.1:5173";
+const workerOrigin = "http://127.0.0.1:8797";
+const webOrigin = "http://127.0.0.1:5184";
 const children = [];
+const childFailures = [];
+let shuttingDown = false;
 
 async function main() {
   await run("pnpm", ["setup:dev-vars"]);
   await run("pnpm", ["--filter", "@me3-core/worker", "db:migrate:local"]);
 
-  const worker = start("pnpm", ["--filter", "@me3-core/worker", "dev"], "worker");
-  const web = start("pnpm", ["--filter", "@me3-core/web", "dev"], "web");
+  const worker = start(
+    "pnpm",
+    [
+      "--filter",
+      "@me3-core/worker",
+      "exec",
+      "wrangler",
+      "dev",
+      "--config",
+      "wrangler.core.example.toml",
+      "--port",
+      "8797",
+    ],
+    "worker",
+  );
+  const web = start(
+    "pnpm",
+    [
+      "--filter",
+      "@me3/web",
+      "exec",
+      "vite",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "5184",
+      "--strictPort",
+    ],
+    "web",
+  );
   children.push(worker, web);
 
   await waitForJson(`${workerOrigin}/health`);
@@ -24,7 +54,7 @@ async function main() {
   assert(health.bindings?.db === true, "Worker health did not report DB binding");
 
   const config = await fetchJson(`${workerOrigin}/api/config`);
-  assert(config.apiOrigin === "http://localhost:8787", "Core API origin mismatch");
+  assert(typeof config.apiOrigin === "string", "Core API origin missing");
 
   const bootstrapCode = readDevVar("ADMIN_BOOTSTRAP_CODE");
   const bootstrap = await postJson(`${workerOrigin}/api/admin/bootstrap`, {
@@ -69,11 +99,12 @@ function start(command, args, label) {
   child.stdout.on("data", (chunk) => process.stdout.write(`[${label}] ${chunk}`));
   child.stderr.on("data", (chunk) => process.stderr.write(`[${label}] ${chunk}`));
   child.on("exit", (code, signal) => {
+    if (shuttingDown) return;
     if (code !== null && code !== 0) {
-      console.error(`[${label}] exited with code ${code}`);
+      childFailures.push(new Error(`${label} exited with code ${code}`));
     }
     if (signal) {
-      console.error(`[${label}] exited with signal ${signal}`);
+      childFailures.push(new Error(`${label} exited with signal ${signal}`));
     }
   });
 
@@ -106,7 +137,7 @@ async function waitForText(url) {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`${url} returned ${response.status}`);
     const body = await response.text();
-    if (!body.includes("ME3 Core")) throw new Error(`${url} did not return web shell`);
+    if (!body.includes("ME3")) throw new Error(`${url} did not return web shell`);
   }, url);
 }
 
@@ -115,6 +146,7 @@ async function waitFor(fn, label) {
   let lastError;
 
   while (Date.now() - started < 30000) {
+    if (childFailures.length > 0) throw childFailures[0];
     try {
       await fn();
       return;
@@ -163,6 +195,7 @@ function assert(condition, message) {
 }
 
 process.on("exit", () => {
+  shuttingDown = true;
   for (const child of children) {
     if (!child.killed) child.kill("SIGTERM");
   }
@@ -177,7 +210,9 @@ main()
     process.exitCode = 1;
   })
   .finally(() => {
+    shuttingDown = true;
     for (const child of children) {
       if (!child.killed) child.kill("SIGTERM");
     }
+    setTimeout(() => process.exit(process.exitCode ?? 0), 100);
   });

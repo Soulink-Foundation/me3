@@ -1,9 +1,35 @@
-import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
+import VueRouter from 'unplugin-vue-router/vite'
+import { resolve } from 'path'
+
+const disableProxy = process.env.VITE_DISABLE_PROXY === '1'
+const devPort = Number(process.env.VITE_PORT || 5174)
 
 export default defineConfig({
-  plugins: [vue()],
-  server: {
-    port: 5173,
+  plugins: [
+    VueRouter({
+      routesFolder: 'src/pages',
+      dts: 'src/typed-router.d.ts',
+    }),
+    vue()
+  ],
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, './src'),
+    },
   },
-});
+  server: {
+    host: process.env.VITE_HOST || '127.0.0.1',
+    port: devPort,
+    strictPort: true,
+    proxy: disableProxy
+      ? undefined
+      : {
+          '/api': {
+            target: 'http://127.0.0.1:8787',
+            changeOrigin: true,
+          },
+        },
+  },
+})

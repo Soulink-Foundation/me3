@@ -1,0 +1,227 @@
+import { createRouter, createWebHistory } from "vue-router";
+import { routes } from "vue-router/auto-routes";
+import { useAuthStore } from "./stores/auth";
+import { useSitesStore, billingUnlocksWorkspaceSurfaces } from "./stores/sites";
+import { useWizardStore } from "./stores/wizard";
+import { DEFAULT_APP_PATH } from "./utils/navigation";
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+});
+
+let syncedSessionUserId: string | null | undefined;
+
+function updateMetaTag(name: string, content: string | undefined) {
+  if (!content) return;
+  let element = document.querySelector(`meta[name="${name}"]`);
+  if (!element) {
+    element = document.createElement("meta");
+    element.setAttribute("name", name);
+    document.head.appendChild(element);
+  }
+  element.setAttribute("content", content);
+}
+
+function updateMetaProperty(property: string, content: string | undefined) {
+  if (!content) return;
+  let element = document.querySelector(`meta[property="${property}"]`);
+  if (!element) {
+    element = document.createElement("meta");
+    element.setAttribute("property", property);
+    document.head.appendChild(element);
+  }
+  element.setAttribute("content", content);
+}
+
+function updateLinkTag(rel: string, href: string | undefined) {
+  if (!href) return;
+  let element = document.querySelector(`link[rel="${rel}"]`);
+  if (!element) {
+    element = document.createElement("link");
+    element.setAttribute("rel", rel);
+    document.head.appendChild(element);
+  }
+  element.setAttribute("href", href);
+}
+
+// Navigation guard
+router.beforeEach(async (to, _from, next) => {
+  const auth = useAuthStore();
+  await auth.ensureInitialized();
+
+  const currentSessionUserId = auth.user?.id ?? null;
+  if (syncedSessionUserId !== currentSessionUserId) {
+    const wizard = useWizardStore();
+    const sites = useSitesStore();
+    wizard.reconcileSession(currentSessionUserId);
+    sites.resetSessionState();
+    syncedSessionUserId = currentSessionUserId;
+  }
+
+  // Redirect logged-in users from public landing page to the app landing path.
+  if (to.path === "/" && auth.isAuthenticated) {
+    next({ path: DEFAULT_APP_PATH });
+    return;
+  }
+
+  if (to.path === "/dashboard" || to.path === "/dashboard/") {
+    next({
+      path: DEFAULT_APP_PATH,
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  if (to.path === "/socials" || to.path === "/socials/") {
+    next({
+      path: "/content",
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  if (to.path === "/socials/relationship-builder") {
+    next({
+      path: "/content/relationship-builder",
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  if (to.path === "/messages") {
+    next({
+      path: "/email",
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  if (to.path === "/clients" || to.path === "/clients/") {
+    next({
+      path: "/contacts",
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  if (
+    to.path === "/agent/relationships" ||
+    to.path.startsWith("/agent/relationships/")
+  ) {
+    next({
+      path: "/content/relationship-builder",
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  if (
+    to.path === "/agent/messages" ||
+    to.path.startsWith("/agent/messages/")
+  ) {
+    next({
+      path: "/email",
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  const jobDeepLinkPrefix = to.path.startsWith("/agent/jobs/")
+    ? "/agent/jobs/"
+    : to.path.startsWith("/assistant/jobs/")
+      ? "/assistant/jobs/"
+      : null;
+  if (jobDeepLinkPrefix) {
+    const jobSegment = to.path.slice(jobDeepLinkPrefix.length);
+    if (jobSegment.length > 0) {
+      next({
+        path: "/assistant",
+        query: { ...to.query, job: jobSegment },
+        hash: to.hash,
+        replace: true,
+      });
+      return;
+    }
+  }
+
+  if (to.path === "/agent" || to.path === "/agent/") {
+    next({
+      path: "/assistant",
+      query: to.query,
+      hash: to.hash,
+      replace: true,
+    });
+    return;
+  }
+
+  if (to.meta.requiresAuth && !auth.isAuthenticated) {
+    next({ path: "/login", query: { redirect: to.fullPath } });
+    return;
+  }
+
+  if (to.meta.requiresWorkspace) {
+    if (!auth.isAuthenticated) {
+      next({ path: "/login", query: { redirect: to.fullPath } });
+      return;
+    }
+    const sites = useSitesStore();
+    await sites.getBillingStatus();
+    if (!billingUnlocksWorkspaceSurfaces(sites.billingStatusSnapshot)) {
+      next({ path: DEFAULT_APP_PATH, replace: true });
+      return;
+    }
+  }
+
+  next();
+});
+
+router.afterEach((to) => {
+  const title = (to.meta?.title as string) || "ME3";
+  const description =
+    (to.meta?.description as string) ||
+    "An assistant for coaches, educators, therapists, and creators who help people every day. Your site, calendar, and email in one place.";
+  const robots = (to.meta?.robots as string) || "index,follow";
+  const ogTitle = (to.meta?.ogTitle as string) || title;
+  const ogDescription = (to.meta?.ogDescription as string) || description;
+  const rawOgImage = (to.meta?.ogImage as string) || "/me3.png";
+
+  document.title = title;
+  updateMetaTag("description", description);
+  updateMetaTag("robots", robots);
+
+  const canonical = `${window.location.origin}${to.path}`;
+  updateLinkTag("canonical", canonical);
+
+  const ogImage = rawOgImage.startsWith("http")
+    ? rawOgImage
+    : `${window.location.origin}${rawOgImage}`;
+
+  updateMetaProperty("og:title", ogTitle);
+  updateMetaProperty("og:description", ogDescription);
+  updateMetaProperty("og:image", ogImage);
+  updateMetaProperty("og:type", "website");
+  updateMetaProperty("og:url", canonical);
+  updateMetaProperty("og:site_name", "ME3");
+
+  updateMetaTag("twitter:card", "summary_large_image");
+  updateMetaTag("twitter:title", ogTitle);
+  updateMetaTag("twitter:description", ogDescription);
+  updateMetaTag("twitter:image", ogImage);
+});
+
+export default router;

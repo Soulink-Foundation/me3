@@ -1,0 +1,2724 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { definePage } from "unplugin-vue-router/runtime";
+import CalendarAgenda from "../components/calendar/CalendarAgenda.vue";
+import CalendarMiniMonth from "../components/calendar/CalendarMiniMonth.vue";
+import CalendarMonthBoard from "../components/calendar/CalendarMonthBoard.vue";
+import CalendarWeekBoard from "../components/calendar/CalendarWeekBoard.vue";
+import Button from "../components/Button.vue";
+import UiIcon from "../components/UiIcon.vue";
+import type {
+  CalendarAgendaEvent,
+  CalendarAgendaSiteOption,
+  CalendarRangeMode,
+} from "../components/calendar/calendarAgenda";
+import { ApiError, api } from "../api";
+import { useSitesStore } from "../stores/sites";
+
+definePage({
+  meta: {
+    requiresAuth: true,
+    requiresWorkspace: true,
+    title: "Calendar | ME3",
+    description:
+      "View upcoming bookings, reminders, events, and imported calendars across your ME3 workspace.",
+    robots: "noindex,follow",
+  },
+});
+
+interface CalendarBookingRow {
+  id: string;
+  site_id: string;
+  username: string;
+  guest_name: string;
+  guest_email: string;
+  starts_at: string;
+  ends_at: string;
+  duration_minutes: number;
+  calendar_event_id: string | null;
+  status: "confirmed" | "cancelled";
+  notes: string | null;
+  created_at: string;
+  cancelled_at: string | null;
+  payment_intent_id: string | null;
+  amount_paid: number | null;
+  suggested_amount: number | null;
+  currency:
+    | "usd"
+    | "gbp"
+    | "eur"
+    | "cad"
+    | "aud"
+    | "chf"
+    | "sgd"
+    | "inr"
+    | "pkr"
+    | null;
+  payment_status: "pending" | "succeeded" | "failed" | "not_required" | null;
+  is_free_booking: number;
+  paid_at: string | null;
+}
+
+interface CalendarReminderRow {
+  id: string;
+  title: string;
+  notes: string | null;
+  remindAt: string;
+  timezone: string | null;
+  recurrenceRule: string | null;
+  contextType: "contact" | "booking" | null;
+  contextId: string | null;
+  contextLabel: string | null;
+  status: "pending" | "delivered" | "dismissed" | "cancelled" | "failed";
+  deliveredAt: string | null;
+  dismissedAt: string | null;
+  createdAt: string;
+}
+
+interface CalendarEventRow {
+  id: string;
+  title: string;
+  notes: string | null;
+  location: string | null;
+  startsAt: string;
+  endsAt: string;
+  timezone: string | null;
+  allDay: boolean;
+  kind?: "event" | "birthday";
+  recurrenceRule?: string | null;
+  sourceId: string | null;
+  sourceName: string;
+  sourceKind: "native" | "imported";
+  createdAt: string;
+}
+
+interface CalendarSourceRow {
+  id: string;
+  name: string;
+  kind: "ics_upload";
+  originalFilename: string | null;
+  importedEventCount: number;
+  createdAt: string;
+}
+
+interface CalendarFeedResponse {
+  bookings: CalendarBookingRow[];
+  reminders: CalendarReminderRow[];
+  events: CalendarEventRow[];
+  importedEvents: CalendarEventRow[];
+  sources: CalendarSourceRow[];
+}
+
+type CreateMode =
+  | "booking"
+  | "reminder"
+  | "event"
+  | "birthday"
+  | "import"
+  | null;
+type QuickCreateMode = Exclude<CreateMode, "import" | null>;
+
+const PERSONAL_EVENTS_KEY = "__events__";
+const BIRTHDAYS_KEY = "__birthdays__";
+const REMINDERS_KEY = "__reminders__";
+const QUICK_CREATE_MODES: QuickCreateMode[] = [
+  "event",
+  "birthday",
+  "reminder",
+  "booking",
+];
+const QUICK_CREATE_LABELS: Record<QuickCreateMode, string> = {
+  event: "Event",
+  birthday: "Birthday",
+  reminder: "Reminder",
+  booking: "Booking",
+};
+const sites = useSitesStore();
+const bookings = ref<CalendarBookingRow[]>([]);
+const reminders = ref<CalendarReminderRow[]>([]);
+const events = ref<CalendarEventRow[]>([]);
+const importedEvents = ref<CalendarEventRow[]>([]);
+const sources = ref<CalendarSourceRow[]>([]);
+const loading = ref(false);
+const error = ref("");
+const statusMessage = ref("");
+const updatingReminderId = ref<string | null>(null);
+const cancellingBookingId = ref<string | null>(null);
+const deletingEventId = ref<string | null>(null);
+const rangeMode = ref<CalendarRangeMode>("schedule");
+const monthCursor = ref(new Date());
+const dayCursor = ref(new Date());
+const activeCreateMode = ref<CreateMode>(null);
+const showCreateMenu = ref(false);
+const quickCreateDayKey = ref<string | null>(null);
+
+function startOfWeekMonday(from: Date): Date {
+  const d = new Date(from);
+  d.setHours(0, 0, 0, 0);
+  const offset = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - offset);
+  return d;
+}
+
+function monthGridWindow(from: Date): { start: Date; end: Date } {
+  const year = from.getFullYear();
+  const month = from.getMonth();
+  const first = new Date(year, month, 1);
+  const start = startOfWeekMonday(first);
+  const lead = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const rowCount = Math.ceil((lead + daysInMonth) / 7);
+  const end = new Date(start);
+  end.setDate(start.getDate() + rowCount * 7);
+  return { start, end };
+}
+
+const weekCursor = ref(startOfWeekMonday(new Date()));
+const focusedDayKey = ref<string | null>(null);
+const preferSelectEventId = ref<string | null>(null);
+const sidebarSiteFilter = ref<string>("all");
+const boardHighlightId = ref("");
+let mobileMediaQuery: MediaQueryList | null = null;
+
+const todayDayKey = computed(() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+});
+
+const monthToolbarTitle = computed(() =>
+  new Intl.DateTimeFormat("en-GB", {
+    month: "long",
+    year: "numeric",
+  }).format(monthCursor.value),
+);
+
+const weekToolbarTitle = computed(() => {
+  const start = weekCursor.value;
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return `${fmt.format(start)} – ${fmt.format(end)}`;
+});
+
+const dayToolbarTitle = computed(() =>
+  new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(dayCursor.value),
+);
+
+const weekStartForBoard = computed(() => startOfWeekMonday(weekCursor.value));
+
+const miniCalendarCursor = computed(() =>
+  rangeMode.value === "day"
+    ? dayCursor.value
+    : rangeMode.value === "week"
+      ? weekCursor.value
+      : monthCursor.value,
+);
+
+const rangeLabel = computed(() => {
+  if (rangeMode.value === "schedule") return "Schedule";
+  if (rangeMode.value === "day") return "Day";
+  return rangeMode.value === "month" ? "Month" : "Week";
+});
+
+const resolvedTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const defaultFormTimeZone = resolvedTimeZone || "UTC";
+const timeZoneOptions = resolvedTimeZone
+  ? { timeZone: resolvedTimeZone }
+  : ({} as Intl.DateTimeFormatOptions);
+
+const newBookingSubmitting = ref(false);
+const newBookingError = ref("");
+const newBookingForm = ref({
+  username: "",
+  guestName: "",
+  guestEmail: "",
+  date: "",
+  startTime: "09:00",
+  durationMinutes: 30,
+  notes: "",
+});
+
+const newReminderSubmitting = ref(false);
+const newReminderError = ref("");
+const newReminderForm = ref({
+  title: "",
+  date: "",
+  time: "",
+  timezone: defaultFormTimeZone,
+  recurrence: "none",
+  notes: "",
+});
+
+const newEventSubmitting = ref(false);
+const newEventError = ref("");
+const newEventForm = ref({
+  title: "",
+  startDate: "",
+  startTime: "",
+  endDate: "",
+  endTime: "",
+  timezone: defaultFormTimeZone,
+  allDay: false,
+  location: "",
+  notes: "",
+});
+
+const newBirthdayForm = ref({
+  name: "",
+  date: "",
+  notes: "",
+});
+
+const importSubmitting = ref(false);
+const importError = ref("");
+const importForm = ref({
+  name: "",
+  file: null as File | null,
+});
+
+const calendarWindow = computed(() => {
+  if (rangeMode.value === "day") {
+    const start = new Date(dayCursor.value);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { start, end };
+  }
+  if (rangeMode.value === "week") {
+    const start = startOfWeekMonday(weekCursor.value);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7);
+    return { start, end };
+  }
+  const c = monthCursor.value;
+  return monthGridWindow(c);
+});
+
+const dayKeyFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      ...timeZoneOptions,
+    }),
+);
+
+const quickCreateDateLabel = computed(() => {
+  if (!quickCreateDayKey.value) return "your calendar";
+  const [year, month, day] = quickCreateDayKey.value.split("-").map(Number);
+  if (!year || !month || !day) return "your calendar";
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  }).format(new Date(year, month - 1, day));
+});
+
+const quickCreateTitle = computed(() => `Add to ${quickCreateDateLabel.value}`);
+
+const activeToolbarTitle = computed(() => {
+  if (rangeMode.value === "schedule") return monthToolbarTitle.value;
+  if (rangeMode.value === "day") return dayToolbarTitle.value;
+  if (rangeMode.value === "week") return weekToolbarTitle.value;
+  return monthToolbarTitle.value;
+});
+
+const focusedAgendaDayKey = computed(() => {
+  if (rangeMode.value !== "day") return focusedDayKey.value;
+  return dayKeyFormatter.value.format(dayCursor.value);
+});
+
+function formatReminderRecurrence(rule: string): string {
+  const normalized = rule.trim().toLowerCase();
+  if (normalized === "daily") return "Daily";
+  if (normalized.startsWith("weekly:")) {
+    return `Weekly on ${normalized.slice("weekly:".length).replace(/,/g, ", ")}`;
+  }
+  if (normalized.startsWith("biweekly:")) {
+    return `Every other ${normalized.slice("biweekly:".length)}`;
+  }
+  if (normalized.startsWith("monthly:")) {
+    return `Monthly on day ${normalized.slice("monthly:".length)}`;
+  }
+  return rule;
+}
+
+function formatEventRecurrence(rule: string | null | undefined): string {
+  if (rule === "yearly") return "Yearly";
+  return rule || "";
+}
+
+function formatEventTime(value: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "numeric",
+    minute: "2-digit",
+    ...timeZoneOptions,
+  }).format(new Date(value));
+}
+
+function formatEventDate(value: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    ...timeZoneOptions,
+  }).format(new Date(value));
+}
+
+function formatEventTimeRange(event: CalendarAgendaEvent) {
+  if (event.allDay) {
+    return formatEventDate(event.startsAt);
+  }
+  if (event.startsAt === event.endsAt) return formatEventTime(event.startsAt);
+  return `${formatEventDate(event.startsAt)}, ${formatEventTime(event.startsAt)} - ${formatEventDate(event.endsAt)}, ${formatEventTime(event.endsAt)}`;
+}
+
+function formatCurrencyAmount(amount: number | null, currency: string | null) {
+  if (amount == null || !currency) return "";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: currency.toUpperCase(),
+    maximumFractionDigits: 0,
+  }).format(amount / 100);
+}
+
+function formatBookingPayment(booking: CalendarBookingRow) {
+  if (booking.is_free_booking === 1) {
+    return "Free booking";
+  }
+
+  if (booking.payment_status === "not_required") {
+    const formatted = formatCurrencyAmount(
+      booking.suggested_amount,
+      booking.currency,
+    );
+    return formatted ? `Manual booking (${formatted})` : "Manual booking";
+  }
+
+  if (booking.payment_status === "succeeded" || booking.amount_paid != null) {
+    const formatted = formatCurrencyAmount(
+      booking.amount_paid ?? booking.suggested_amount,
+      booking.currency,
+    );
+    return formatted ? `Paid ${formatted}` : "Paid";
+  }
+
+  if (booking.payment_status === "pending") {
+    return "Payment pending";
+  }
+
+  return "Payment status unavailable";
+}
+
+function defaultDateInput(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function defaultTimeInput(offsetHours = 1): string {
+  const d = new Date();
+  d.setMinutes(0, 0, 0);
+  d.setHours(d.getHours() + offsetHours);
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function preferredCreateDate(): string {
+  return focusedDayKey.value || defaultDateInput();
+}
+
+function mapBookingToCalendarEvent(
+  booking: CalendarBookingRow,
+): CalendarAgendaEvent {
+  return {
+    id: booking.id,
+    sourceLabel: "Booking",
+    title: booking.guest_name || "Unnamed booking",
+    siteKey: booking.username,
+    siteLabel: `${booking.username}.me3.app`,
+    startsAt: booking.starts_at,
+    endsAt: booking.ends_at,
+    summary: booking.guest_email,
+    detailLines: [
+      { label: "Guest", value: booking.guest_name || "Unknown guest" },
+      { label: "Email", value: booking.guest_email },
+      { label: "Duration", value: `${booking.duration_minutes} minutes` },
+      { label: "Payment", value: formatBookingPayment(booking) },
+    ],
+    notes: booking.notes,
+  };
+}
+
+function mapReminderToCalendarEvent(
+  reminder: CalendarReminderRow,
+): CalendarAgendaEvent {
+  return {
+    id: reminder.id,
+    sourceLabel: "Reminder",
+    title: reminder.title,
+    siteKey: REMINDERS_KEY,
+    siteLabel: "Agent reminders",
+    startsAt: reminder.remindAt,
+    endsAt: reminder.remindAt,
+    summary: reminder.recurrenceRule
+      ? `Recurring: ${formatReminderRecurrence(reminder.recurrenceRule)}`
+      : "One-time reminder",
+    detailLines: [
+      { label: "Status", value: reminder.status },
+      ...(reminder.timezone
+        ? [{ label: "Timezone", value: reminder.timezone }]
+        : []),
+      ...(reminder.contextLabel
+        ? [{ label: "Context", value: reminder.contextLabel }]
+        : []),
+    ],
+    notes: reminder.notes,
+    actionLabel: "Cancel reminder",
+  };
+}
+
+function mapEventToCalendarEvent(event: CalendarEventRow): CalendarAgendaEvent {
+  const isImported = event.sourceKind === "imported";
+  const isBirthday = event.kind === "birthday";
+  const siteKey = isImported
+    ? `import:${event.sourceId}`
+    : isBirthday
+      ? BIRTHDAYS_KEY
+      : PERSONAL_EVENTS_KEY;
+  return {
+    id: event.id,
+    sourceLabel: isImported ? "Imported" : isBirthday ? "Birthday" : "Event",
+    title: event.title || "Untitled event",
+    siteKey,
+    siteLabel: isBirthday ? "Birthdays" : event.sourceName,
+    startsAt: event.startsAt,
+    endsAt: event.endsAt,
+    allDay: event.allDay,
+    kind: event.kind || "event",
+    recurrenceRule: event.recurrenceRule || null,
+    summary:
+      event.location ||
+      (isBirthday ? "Birthday" : event.allDay ? "All day" : "Personal event"),
+    detailLines: [
+      ...(event.allDay ? [{ label: "When", value: "All day" }] : []),
+      ...(event.location ? [{ label: "Location", value: event.location }] : []),
+      ...(event.timezone ? [{ label: "Timezone", value: event.timezone }] : []),
+      ...(event.recurrenceRule
+        ? [
+            {
+              label: "Repeats",
+              value: formatEventRecurrence(event.recurrenceRule),
+            },
+          ]
+        : []),
+      ...(isImported
+        ? [{ label: "Imported from", value: event.sourceName }]
+        : [
+            {
+              label: "Type",
+              value: isBirthday ? "Birthday" : "Personal event",
+            },
+          ]),
+    ],
+    notes: event.notes,
+    actionLabel: isImported ? null : "Delete event",
+  };
+}
+
+const siteOptions = computed<CalendarAgendaSiteOption[]>(() => [
+  ...sites.sites.map((site) => ({
+    value: site.username,
+    label: `${site.username}.me3.app`,
+  })),
+  { value: PERSONAL_EVENTS_KEY, label: "Personal events" },
+  { value: BIRTHDAYS_KEY, label: "Birthdays" },
+  { value: REMINDERS_KEY, label: "Agent reminders" },
+  ...sources.value.map((source) => ({
+    value: `import:${source.id}`,
+    label: source.name,
+  })),
+]);
+
+const mergedRangeEvents = computed(() =>
+  [
+    ...bookings.value.map(mapBookingToCalendarEvent),
+    ...events.value.map(mapEventToCalendarEvent),
+    ...importedEvents.value.map(mapEventToCalendarEvent),
+    ...reminders.value.map(mapReminderToCalendarEvent),
+  ].sort(
+    (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
+  ),
+);
+
+const visibleEvents = computed(() => {
+  if (sidebarSiteFilter.value === "all") return mergedRangeEvents.value;
+  return mergedRangeEvents.value.filter(
+    (event) => event.siteKey === sidebarSiteFilter.value,
+  );
+});
+
+const selectedBoardEvent = computed(() => {
+  if (!boardHighlightId.value) return null;
+  return (
+    visibleEvents.value.find((event) => event.id === boardHighlightId.value) ??
+    null
+  );
+});
+
+async function reloadCalendar() {
+  loading.value = true;
+  error.value = "";
+
+  try {
+    const { start, end } = calendarWindow.value;
+    const qs = new URLSearchParams({
+      start: start.toISOString(),
+      end: end.toISOString(),
+    });
+    const response = await api.get<CalendarFeedResponse>(
+      `/calendar/feed?${qs.toString()}`,
+    );
+    bookings.value = response.bookings || [];
+    reminders.value = response.reminders || [];
+    events.value = response.events || [];
+    importedEvents.value = response.importedEvents || [];
+    sources.value = response.sources || [];
+  } catch (err) {
+    error.value =
+      err instanceof Error ? err.message : "Failed to load calendar";
+    bookings.value = [];
+    reminders.value = [];
+    events.value = [];
+    importedEvents.value = [];
+    sources.value = [];
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function cancelReminder(reminderId: string) {
+  if (updatingReminderId.value) return;
+  updatingReminderId.value = reminderId;
+  try {
+    await api.put(`/agent/reminders/${reminderId}/cancel`);
+    statusMessage.value = "Reminder cancelled.";
+    await reloadCalendar();
+  } finally {
+    updatingReminderId.value = null;
+  }
+}
+
+async function deleteCalendarEvent(eventId: string) {
+  if (deletingEventId.value) return;
+  if (!window.confirm("Delete this event from your calendar?")) {
+    return;
+  }
+  deletingEventId.value = eventId;
+  try {
+    await api.delete(`/calendar/events/${eventId}`);
+    statusMessage.value = "Event deleted.";
+    await reloadCalendar();
+  } catch (err) {
+    error.value =
+      err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Failed to delete event";
+  } finally {
+    deletingEventId.value = null;
+  }
+}
+
+function handleEventAction(event: CalendarAgendaEvent) {
+  if (event.sourceLabel === "Reminder") {
+    void cancelReminder(event.id);
+    return;
+  }
+
+  if (event.sourceLabel === "Event" || event.sourceLabel === "Birthday") {
+    void deleteCalendarEvent(event.id);
+  }
+}
+
+async function handleCancelBooking(event: CalendarAgendaEvent) {
+  if (event.sourceLabel !== "Booking") return;
+  if (
+    !window.confirm(
+      "Cancel this booking? The guest will receive a cancellation email.",
+    )
+  ) {
+    return;
+  }
+  if (cancellingBookingId.value) return;
+  cancellingBookingId.value = event.id;
+  try {
+    await api.delete(`/book/cancel/${event.id}`);
+    statusMessage.value = "Booking cancelled.";
+    await reloadCalendar();
+  } catch (err) {
+    error.value =
+      err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Failed to cancel booking";
+  } finally {
+    cancellingBookingId.value = null;
+  }
+}
+
+const SITE_DOT_PALETTE = [
+  "#7dbaf9",
+  "#f28b82",
+  "#fdd663",
+  "#81c995",
+  "#c58af9",
+  "#ffad47",
+  "#78d9ec",
+];
+
+function siteDotColor(key: string): string {
+  if (key === REMINDERS_KEY) return "#9aa0a6";
+  if (key === PERSONAL_EVENTS_KEY) return "#111111";
+  if (key === BIRTHDAYS_KEY) return "#81c995";
+  let h = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    h = (h * 31 + key.charCodeAt(i)) | 0;
+  }
+  return SITE_DOT_PALETTE[Math.abs(h) % SITE_DOT_PALETTE.length];
+}
+
+function onRangeChange(mode: CalendarRangeMode) {
+  const previous = rangeMode.value;
+  rangeMode.value = mode;
+  boardHighlightId.value = "";
+  if (mode === "day" && previous !== "day") {
+    dayCursor.value = new Date();
+    focusedDayKey.value = dayKeyFormatter.value.format(dayCursor.value);
+  }
+  if (mode === "month" && previous !== "month") {
+    monthCursor.value = new Date();
+    focusedDayKey.value = null;
+  }
+  if (mode === "week" && previous !== "week") {
+    weekCursor.value = startOfWeekMonday(new Date());
+    focusedDayKey.value = null;
+  }
+  if (mode === "schedule" && previous !== "schedule") {
+    monthCursor.value = new Date();
+    focusedDayKey.value = null;
+  }
+  void reloadCalendar();
+}
+
+function onPrevDay() {
+  const d = new Date(dayCursor.value);
+  d.setDate(d.getDate() - 1);
+  dayCursor.value = d;
+  focusedDayKey.value = dayKeyFormatter.value.format(d);
+  void reloadCalendar();
+}
+
+function onNextDay() {
+  const d = new Date(dayCursor.value);
+  d.setDate(d.getDate() + 1);
+  dayCursor.value = d;
+  focusedDayKey.value = dayKeyFormatter.value.format(d);
+  void reloadCalendar();
+}
+
+function onPrevMonth() {
+  const c = monthCursor.value;
+  monthCursor.value = new Date(c.getFullYear(), c.getMonth() - 1, 1);
+  focusedDayKey.value = null;
+  void reloadCalendar();
+}
+
+function onNextMonth() {
+  const c = monthCursor.value;
+  monthCursor.value = new Date(c.getFullYear(), c.getMonth() + 1, 1);
+  focusedDayKey.value = null;
+  void reloadCalendar();
+}
+
+function onPrevWeek() {
+  const d = new Date(weekCursor.value);
+  d.setDate(d.getDate() - 7);
+  weekCursor.value = d;
+  focusedDayKey.value = null;
+  void reloadCalendar();
+}
+
+function onNextWeek() {
+  const d = new Date(weekCursor.value);
+  d.setDate(d.getDate() + 7);
+  weekCursor.value = d;
+  focusedDayKey.value = null;
+  void reloadCalendar();
+}
+
+function onToolbarPrev() {
+  if (rangeMode.value === "day") onPrevDay();
+  else if (rangeMode.value === "month" || rangeMode.value === "schedule") {
+    onPrevMonth();
+  } else if (rangeMode.value === "week") onPrevWeek();
+}
+
+function onToolbarNext() {
+  if (rangeMode.value === "day") onNextDay();
+  else if (rangeMode.value === "month" || rangeMode.value === "schedule") {
+    onNextMonth();
+  } else if (rangeMode.value === "week") onNextWeek();
+}
+
+watch(visibleEvents, (nextEvents) => {
+  if (
+    boardHighlightId.value &&
+    !nextEvents.some((event) => event.id === boardHighlightId.value)
+  ) {
+    boardHighlightId.value = "";
+  }
+});
+
+watch(siteOptions, (nextOptions) => {
+  if (
+    sidebarSiteFilter.value !== "all" &&
+    !nextOptions.some((option) => option.value === sidebarSiteFilter.value)
+  ) {
+    sidebarSiteFilter.value = "all";
+  }
+});
+
+function applyMobileCalendarDefaults(matches: boolean) {
+  if (!matches) return;
+  sidebarSiteFilter.value = "all";
+  if (rangeMode.value !== "schedule") {
+    monthCursor.value = new Date();
+    focusedDayKey.value = null;
+    rangeMode.value = "schedule";
+  }
+}
+
+function onMobileCalendarChange(event: MediaQueryListEvent) {
+  applyMobileCalendarDefaults(event.matches);
+  if (event.matches) void reloadCalendar();
+}
+
+function onBoardSelectEvent(id: string) {
+  boardHighlightId.value = id;
+  preferSelectEventId.value = id;
+  focusedDayKey.value = null;
+}
+
+function focusBoardDay(dayKey: string) {
+  const toggle = focusedDayKey.value === dayKey ? null : dayKey;
+  focusedDayKey.value = toggle;
+  if (!toggle) return;
+  const keyFmt = dayKeyFormatter.value;
+  const first = visibleEvents.value.find(
+    (event) => keyFmt.format(new Date(event.startsAt)) === toggle,
+  );
+  if (first) {
+    boardHighlightId.value = first.id;
+    preferSelectEventId.value = first.id;
+  }
+}
+
+function onBoardSelectDay(dayKey: string) {
+  focusedDayKey.value = dayKey;
+  boardHighlightId.value = "";
+  preferSelectEventId.value = null;
+  openCreateMode("event", dayKey);
+}
+
+function onMiniPick(dayKey: string) {
+  const [year, month, day] = dayKey.split("-").map(Number);
+  if (year && month && day) {
+    const picked = new Date(year, month - 1, day);
+    if (rangeMode.value === "day") {
+      dayCursor.value = picked;
+      focusedDayKey.value = dayKey;
+      void reloadCalendar();
+    } else if (rangeMode.value === "week") {
+      weekCursor.value = startOfWeekMonday(picked);
+      void reloadCalendar();
+    } else if (rangeMode.value === "month" || rangeMode.value === "schedule") {
+      monthCursor.value = new Date(year, month - 1, 1);
+      void reloadCalendar();
+    }
+  }
+  focusBoardDay(dayKey);
+}
+
+function resetBookingForm() {
+  const firstSite = sites.sites[0]?.username ?? "";
+  newBookingError.value = "";
+  newBookingForm.value = {
+    username: newBookingForm.value.username || firstSite,
+    guestName: "",
+    guestEmail: "",
+    date: preferredCreateDate(),
+    startTime: "09:00",
+    durationMinutes: 30,
+    notes: "",
+  };
+}
+
+function resetReminderForm() {
+  newReminderError.value = "";
+  newReminderForm.value = {
+    title: "",
+    date: preferredCreateDate(),
+    time: defaultTimeInput(),
+    timezone: defaultFormTimeZone,
+    recurrence: "none",
+    notes: "",
+  };
+}
+
+function resetEventForm() {
+  const date = preferredCreateDate();
+  newEventError.value = "";
+  newEventForm.value = {
+    title: "",
+    startDate: date,
+    startTime: defaultTimeInput(),
+    endDate: date,
+    endTime: defaultTimeInput(2),
+    timezone: defaultFormTimeZone,
+    allDay: false,
+    location: "",
+    notes: "",
+  };
+}
+
+function resetBirthdayForm() {
+  newEventError.value = "";
+  newBirthdayForm.value = {
+    name: "",
+    date: preferredCreateDate(),
+    notes: "",
+  };
+}
+
+function resetImportForm() {
+  importError.value = "";
+  importForm.value = {
+    name: "",
+    file: null,
+  };
+}
+
+function openCreateMode(mode: Exclude<CreateMode, null>, dayKey?: string) {
+  showCreateMenu.value = false;
+  statusMessage.value = "";
+  if (dayKey) {
+    focusedDayKey.value = dayKey;
+  }
+  quickCreateDayKey.value =
+    mode === "import" ? null : (dayKey ?? focusedDayKey.value);
+
+  if (mode === "booking") resetBookingForm();
+  if (mode === "reminder") resetReminderForm();
+  if (mode === "event") resetEventForm();
+  if (mode === "birthday") resetBirthdayForm();
+  if (mode === "import") resetImportForm();
+
+  activeCreateMode.value = mode;
+}
+
+function switchQuickCreateMode(mode: QuickCreateMode) {
+  if (activeCreateMode.value === mode) return;
+  if (mode === "booking") resetBookingForm();
+  if (mode === "reminder") resetReminderForm();
+  if (mode === "event") resetEventForm();
+  if (mode === "birthday") resetBirthdayForm();
+  activeCreateMode.value = mode;
+}
+
+function isQuickCreateMode(mode: CreateMode): mode is QuickCreateMode {
+  return (
+    mode === "event" ||
+    mode === "birthday" ||
+    mode === "reminder" ||
+    mode === "booking"
+  );
+}
+
+function closeCreateMode() {
+  activeCreateMode.value = null;
+  showCreateMenu.value = false;
+  quickCreateDayKey.value = null;
+}
+
+async function submitNewBooking() {
+  newBookingError.value = "";
+  const form = newBookingForm.value;
+  if (
+    !form.username.trim() ||
+    !form.guestName.trim() ||
+    !form.guestEmail.trim()
+  ) {
+    newBookingError.value = "Site, guest name, and email are required.";
+    return;
+  }
+
+  newBookingSubmitting.value = true;
+  try {
+    const response = await api.post<{ ok: boolean; booking: { id: string } }>(
+      "/book/workspace",
+      {
+        username: form.username.trim(),
+        guestName: form.guestName.trim(),
+        guestEmail: form.guestEmail.trim(),
+        date: form.date,
+        startTime: form.startTime,
+        durationMinutes: form.durationMinutes,
+        notes: form.notes.trim() || undefined,
+      },
+    );
+    preferSelectEventId.value = response.booking.id;
+    boardHighlightId.value = response.booking.id;
+    statusMessage.value = "Booking created.";
+    closeCreateMode();
+    await reloadCalendar();
+  } catch (err) {
+    newBookingError.value =
+      err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Could not create booking.";
+  } finally {
+    newBookingSubmitting.value = false;
+  }
+}
+
+async function submitNewReminder() {
+  newReminderError.value = "";
+  const form = newReminderForm.value;
+  if (!form.title.trim()) {
+    newReminderError.value = "Title is required.";
+    return;
+  }
+
+  newReminderSubmitting.value = true;
+  try {
+    const response = await api.post<{ ok: boolean; reminder: { id: string } }>(
+      "/agent/reminders",
+      {
+        title: form.title.trim(),
+        date: form.date,
+        time: form.time,
+        timezone: form.timezone,
+        recurrence: form.recurrence,
+        notes: form.notes.trim() || undefined,
+      },
+    );
+    preferSelectEventId.value = response.reminder.id;
+    boardHighlightId.value = response.reminder.id;
+    statusMessage.value = "Reminder added to your calendar.";
+    closeCreateMode();
+    await reloadCalendar();
+  } catch (err) {
+    newReminderError.value =
+      err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Could not create reminder.";
+  } finally {
+    newReminderSubmitting.value = false;
+  }
+}
+
+async function submitNewEvent() {
+  newEventError.value = "";
+  const form = newEventForm.value;
+  if (!form.title.trim()) {
+    newEventError.value = "Title is required.";
+    return;
+  }
+
+  newEventSubmitting.value = true;
+  try {
+    const response = await api.post<{ ok: boolean; event: { id: string } }>(
+      "/calendar/events",
+      {
+        title: form.title.trim(),
+        startDate: form.startDate,
+        startTime: form.startTime,
+        endDate: form.endDate,
+        endTime: form.endTime,
+        timezone: form.timezone,
+        allDay: form.allDay,
+        location: form.location.trim() || undefined,
+        notes: form.notes.trim() || undefined,
+      },
+    );
+    preferSelectEventId.value = response.event.id;
+    boardHighlightId.value = response.event.id;
+    statusMessage.value = "Event added to your calendar.";
+    closeCreateMode();
+    await reloadCalendar();
+  } catch (err) {
+    newEventError.value =
+      err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Could not create event.";
+  } finally {
+    newEventSubmitting.value = false;
+  }
+}
+
+async function submitNewBirthday() {
+  newEventError.value = "";
+  const form = newBirthdayForm.value;
+  if (!form.name.trim()) {
+    newEventError.value = "Name is required.";
+    return;
+  }
+
+  newEventSubmitting.value = true;
+  try {
+    const response = await api.post<{ ok: boolean; event: { id: string } }>(
+      "/calendar/events",
+      {
+        title: `${form.name.trim()}'s birthday`,
+        startDate: form.date,
+        endDate: form.date,
+        timezone: defaultFormTimeZone,
+        allDay: true,
+        kind: "birthday",
+        recurrenceRule: "yearly",
+        notes: form.notes.trim() || undefined,
+      },
+    );
+    preferSelectEventId.value = response.event.id;
+    boardHighlightId.value = response.event.id;
+    statusMessage.value = "Birthday added to your calendar.";
+    closeCreateMode();
+    await reloadCalendar();
+  } catch (err) {
+    newEventError.value =
+      err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Could not create birthday.";
+  } finally {
+    newEventSubmitting.value = false;
+  }
+}
+
+function onImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  importForm.value.file = input?.files?.[0] || null;
+}
+
+async function submitImport() {
+  importError.value = "";
+  if (!importForm.value.file) {
+    importError.value = "Choose an .ics file to import.";
+    return;
+  }
+
+  importSubmitting.value = true;
+  try {
+    const formData = new FormData();
+    formData.set("file", importForm.value.file);
+    if (importForm.value.name.trim()) {
+      formData.set("name", importForm.value.name.trim());
+    }
+    const response = await api.upload<{
+      ok: boolean;
+      importedCount: number;
+      source: { name: string };
+    }>("/calendar/import/ics", formData);
+    statusMessage.value = `Imported ${response.importedCount} events from ${response.source.name}.`;
+    closeCreateMode();
+    await reloadCalendar();
+  } catch (err) {
+    importError.value =
+      err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Could not import calendar.";
+  } finally {
+    importSubmitting.value = false;
+  }
+}
+
+watch(
+  () => sites.sites.length,
+  (nextCount) => {
+    if (nextCount > 0 && !newBookingForm.value.username) {
+      newBookingForm.value.username = sites.sites[0]?.username ?? "";
+    }
+  },
+);
+
+onMounted(async () => {
+  mobileMediaQuery = window.matchMedia("(max-width: 760px)");
+  applyMobileCalendarDefaults(mobileMediaQuery.matches);
+  mobileMediaQuery.addEventListener("change", onMobileCalendarChange);
+  await sites.fetchSites();
+  if (sites.sites[0]) {
+    newBookingForm.value.username = sites.sites[0].username;
+  }
+  await reloadCalendar();
+});
+
+onBeforeUnmount(() => {
+  mobileMediaQuery?.removeEventListener("change", onMobileCalendarChange);
+});
+</script>
+
+<template>
+  <div class="ops-page calendar-spike">
+    <Teleport to="#app-side-nav-mobile-page-controls">
+      <div v-if="!loading && !error" class="cal-mobile-nav-controls">
+        <div class="cal-mobile-nav-period">
+          <button
+            type="button"
+            class="cal-arrow"
+            aria-label="Previous period"
+            @click="onToolbarPrev"
+          >
+            <UiIcon name="ChevronLeft" :size="18" aria-hidden="true" />
+          </button>
+          <span class="cal-mobile-nav-title">
+            {{ activeToolbarTitle }}
+          </span>
+          <button
+            type="button"
+            class="cal-arrow"
+            aria-label="Next period"
+            @click="onToolbarNext"
+          >
+            <UiIcon name="ChevronRight" :size="18" aria-hidden="true" />
+          </button>
+        </div>
+        <div
+          class="cal-view-toggle cal-view-toggle--mobile-nav"
+          role="group"
+          aria-label="Calendar range"
+        >
+          <button
+            type="button"
+            :class="{ 'is-on': rangeMode === 'schedule' }"
+            @click="onRangeChange('schedule')"
+          >
+            Schedule
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-on': rangeMode === 'week' }"
+            @click="onRangeChange('week')"
+          >
+            Week
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-on': rangeMode === 'month' }"
+            @click="onRangeChange('month')"
+          >
+            Month
+          </button>
+        </div>
+        <div class="cal-mobile-create-wrap">
+          <button
+            type="button"
+            class="cal-create-mobile"
+            aria-label="Create calendar item"
+            @click="showCreateMenu = !showCreateMenu"
+          >
+            <UiIcon name="Plus" :size="18" aria-hidden="true" />
+          </button>
+          <div v-if="showCreateMenu" class="cal-create-menu cal-create-menu--mobile-nav">
+            <button type="button" @click="openCreateMode('booking')">
+              New booking
+            </button>
+            <button type="button" @click="openCreateMode('reminder')">
+              New reminder
+            </button>
+            <button type="button" @click="openCreateMode('event')">
+              New event
+            </button>
+            <button type="button" @click="openCreateMode('birthday')">
+              New birthday
+            </button>
+            <button type="button" @click="openCreateMode('import')">
+              Import .ics
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <main class="main">
+      <div v-if="!loading && !error" class="cal-toolbar">
+        <div class="cal-toolbar-left">
+          <div class="cal-arrows">
+            <button
+              type="button"
+              class="cal-arrow"
+              aria-label="Previous period"
+              @click="onToolbarPrev"
+            >
+              <UiIcon name="ChevronLeft" :size="20" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              class="cal-arrow"
+              aria-label="Next period"
+              @click="onToolbarNext"
+            >
+              <UiIcon name="ChevronRight" :size="20" aria-hidden="true" />
+            </button>
+          </div>
+          <h2 class="cal-toolbar-heading">
+            {{ activeToolbarTitle }}
+          </h2>
+        </div>
+        <div class="cal-view-toggle" role="group" aria-label="Calendar range">
+          <button
+            type="button"
+            :class="{ 'is-on': rangeMode === 'schedule' }"
+            @click="onRangeChange('schedule')"
+          >
+            Schedule
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-on': rangeMode === 'week' }"
+            @click="onRangeChange('week')"
+          >
+            Week
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-on': rangeMode === 'month' }"
+            @click="onRangeChange('month')"
+          >
+            Month
+          </button>
+        </div>
+      </div>
+
+      <div v-if="loading" class="cal-loading">Loading calendar…</div>
+      <div v-else-if="error" class="cal-error-banner">{{ error }}</div>
+      <template v-else>
+        <div v-if="statusMessage" class="cal-status-banner">
+          {{ statusMessage }}
+        </div>
+
+        <div
+          class="cal-shell"
+          :class="{ 'cal-shell--board-view': rangeMode !== 'schedule' }"
+        >
+            <aside class="cal-sidebar">
+              <div class="cal-create-wrap">
+                <button
+                  type="button"
+                  class="cal-create"
+                  @click="showCreateMenu = !showCreateMenu"
+                >
+                  + Create
+                </button>
+                <div v-if="showCreateMenu" class="cal-create-menu">
+                  <button type="button" @click="openCreateMode('booking')">
+                    New booking
+                  </button>
+                  <button type="button" @click="openCreateMode('reminder')">
+                    New reminder
+                  </button>
+                  <button type="button" @click="openCreateMode('event')">
+                    New event
+                  </button>
+                  <button type="button" @click="openCreateMode('birthday')">
+                    New birthday
+                  </button>
+                  <button type="button" @click="openCreateMode('import')">
+                    Import .ics
+                  </button>
+                </div>
+              </div>
+              <div class="cal-sidebar-calendar-tools">
+                <CalendarMiniMonth
+                  :year="miniCalendarCursor.getFullYear()"
+                  :month="miniCalendarCursor.getMonth()"
+                  :today-day-key="todayDayKey"
+                  :selected-day-key="focusedDayKey"
+                  @pick-day="onMiniPick"
+                />
+              </div>
+              <section
+                class="cal-filters cal-sidebar-calendar-tools"
+                aria-label="Calendars"
+              >
+                <h3 class="cal-filters-title">Calendars</h3>
+                <label class="cal-filter-row">
+                  <input
+                    v-model="sidebarSiteFilter"
+                    type="radio"
+                    class="cal-filter-input"
+                    value="all"
+                  />
+                  <span
+                    class="cal-swatch cal-swatch--neutral"
+                    aria-hidden="true"
+                  />
+                  <span class="cal-filter-label">All calendars</span>
+                </label>
+                <label
+                  v-for="s in sites.sites"
+                  :key="s.username"
+                  class="cal-filter-row"
+                >
+                  <input
+                    v-model="sidebarSiteFilter"
+                    type="radio"
+                    class="cal-filter-input"
+                    :value="s.username"
+                  />
+                  <span
+                    class="cal-swatch"
+                    :style="{ background: siteDotColor(s.username) }"
+                    aria-hidden="true"
+                  />
+                  <span class="cal-filter-label">{{ s.username }}</span>
+                </label>
+                <label class="cal-filter-row">
+                  <input
+                    v-model="sidebarSiteFilter"
+                    type="radio"
+                    class="cal-filter-input"
+                    value="__reminders__"
+                  />
+                  <span
+                    class="cal-swatch cal-swatch--muted"
+                    aria-hidden="true"
+                  />
+                  <span class="cal-filter-label">Reminders</span>
+                </label>
+                <label class="cal-filter-row">
+                  <input
+                    v-model="sidebarSiteFilter"
+                    type="radio"
+                    class="cal-filter-input"
+                    :value="PERSONAL_EVENTS_KEY"
+                  />
+                  <span
+                    class="cal-swatch"
+                    :style="{ background: siteDotColor(PERSONAL_EVENTS_KEY) }"
+                    aria-hidden="true"
+                  />
+                  <span class="cal-filter-label">Personal events</span>
+                </label>
+                <label class="cal-filter-row">
+                  <input
+                    v-model="sidebarSiteFilter"
+                    type="radio"
+                    class="cal-filter-input"
+                    :value="BIRTHDAYS_KEY"
+                  />
+                  <span
+                    class="cal-swatch"
+                    :style="{ background: siteDotColor(BIRTHDAYS_KEY) }"
+                    aria-hidden="true"
+                  />
+                  <span class="cal-filter-label">Birthdays</span>
+                </label>
+                <label
+                  v-for="source in sources"
+                  :key="source.id"
+                  class="cal-filter-row"
+                >
+                  <input
+                    v-model="sidebarSiteFilter"
+                    type="radio"
+                    class="cal-filter-input"
+                    :value="`import:${source.id}`"
+                  />
+                  <span
+                    class="cal-swatch"
+                    :style="{ background: siteDotColor(`import:${source.id}`) }"
+                    aria-hidden="true"
+                  />
+                  <span class="cal-filter-label">{{ source.name }}</span>
+                </label>
+              </section>
+            </aside>
+
+            <div class="cal-board-wrap">
+              <CalendarAgenda
+                v-if="rangeMode === 'schedule'"
+                :events="visibleEvents"
+                :site-options="siteOptions"
+                :range-mode="rangeMode"
+                :range-label="rangeLabel"
+                :focus-day-key="focusedDayKey"
+                :prefer-select-event-id="preferSelectEventId"
+                :cancelling-booking-id="cancellingBookingId"
+                title="Schedule"
+                description="Scheduled items across your calendars."
+                @clear-focus="focusedDayKey = null"
+                @consumed-prefer-select="preferSelectEventId = null"
+                @event-action="handleEventAction"
+                @cancel-booking="handleCancelBooking"
+              />
+              <CalendarAgenda
+                v-else-if="rangeMode === 'day'"
+                :events="visibleEvents"
+                :site-options="siteOptions"
+                title="Daily schedule"
+                description="Bookings, reminders, events, and imported calendars."
+                range-label="Day"
+                range-mode="day"
+                :focus-day-key="focusedAgendaDayKey"
+                :prefer-select-event-id="preferSelectEventId"
+                :cancelling-booking-id="cancellingBookingId"
+                hide-site-filter
+                @event-action="handleEventAction"
+                @cancel-booking="handleCancelBooking"
+                @clear-focus="focusedDayKey = null"
+                @consumed-prefer-select="preferSelectEventId = null"
+              />
+              <template v-else>
+                <label
+                  v-if="siteOptions.length > 1"
+                  class="board-calendar-select-wrap"
+                >
+                  <select
+                    v-model="sidebarSiteFilter"
+                    class="board-calendar-select"
+                    aria-label="Calendar"
+                  >
+                    <option value="all">All calendars</option>
+                    <option
+                      v-for="option in siteOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </label>
+                <CalendarMonthBoard
+                  v-if="rangeMode === 'month'"
+                  :year="monthCursor.getFullYear()"
+                  :month="monthCursor.getMonth()"
+                  :events="visibleEvents"
+                  :selected-event-id="boardHighlightId"
+                  :today-day-key="todayDayKey"
+                  @select-event="onBoardSelectEvent"
+                  @select-day="onBoardSelectDay"
+                />
+                <CalendarWeekBoard
+                  v-else
+                  :week-start="weekStartForBoard"
+                  :events="visibleEvents"
+                  :selected-event-id="boardHighlightId"
+                  :today-day-key="todayDayKey"
+                  @select-event="onBoardSelectEvent"
+                  @select-day="onBoardSelectDay"
+                />
+              </template>
+            </div>
+        </div>
+
+      </template>
+    </main>
+
+    <div
+      v-if="selectedBoardEvent"
+      class="modal-overlay"
+      @click.self="boardHighlightId = ''"
+    >
+      <aside
+        class="modal-card event-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="event-detail-title"
+      >
+        <div class="modal-header">
+          <div>
+            <p class="modal-kicker">{{ selectedBoardEvent.sourceLabel }}</p>
+            <h2 id="event-detail-title">{{ selectedBoardEvent.title }}</h2>
+          </div>
+          <button
+            type="button"
+            class="icon-close"
+            aria-label="Close"
+            @click="boardHighlightId = ''"
+          >
+            ×
+          </button>
+        </div>
+
+        <p class="event-detail-summary">{{ selectedBoardEvent.summary }}</p>
+        <p class="event-detail-time">
+          {{ formatEventTimeRange(selectedBoardEvent) }}
+        </p>
+        <p class="event-detail-site">{{ selectedBoardEvent.siteLabel }}</p>
+
+        <dl class="event-detail-list">
+          <div
+            v-for="line in selectedBoardEvent.detailLines"
+            :key="line.label"
+            class="event-detail-row"
+          >
+            <dt>{{ line.label }}</dt>
+            <dd>{{ line.value }}</dd>
+          </div>
+        </dl>
+
+        <div v-if="selectedBoardEvent.notes" class="event-detail-notes">
+          <h3>Notes</h3>
+          <p>{{ selectedBoardEvent.notes }}</p>
+        </div>
+
+        <button
+          v-if="selectedBoardEvent.actionLabel"
+          type="button"
+          class="event-detail-action"
+          @click="handleEventAction(selectedBoardEvent)"
+        >
+          {{ selectedBoardEvent.actionLabel }}
+        </button>
+
+        <button
+          v-if="selectedBoardEvent.sourceLabel === 'Booking'"
+          type="button"
+          class="event-detail-action event-detail-action--danger"
+          :disabled="cancellingBookingId === selectedBoardEvent.id"
+          @click="handleCancelBooking(selectedBoardEvent)"
+        >
+          {{
+            cancellingBookingId === selectedBoardEvent.id
+              ? "Cancelling…"
+              : "Cancel booking"
+          }}
+        </button>
+      </aside>
+    </div>
+
+    <div
+      v-if="isQuickCreateMode(activeCreateMode)"
+      class="modal-overlay"
+      @click.self="closeCreateMode"
+    >
+      <div
+        class="modal-card quick-create-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quick-create-title"
+      >
+        <div class="modal-header">
+          <div>
+            <p class="modal-kicker">Quick create</p>
+            <h2 id="quick-create-title">{{ quickCreateTitle }}</h2>
+          </div>
+          <button
+            type="button"
+            class="icon-close"
+            aria-label="Close"
+            @click="closeCreateMode"
+          >
+            ×
+          </button>
+        </div>
+
+        <div class="create-tabs" role="tablist" aria-label="Create type">
+          <button
+            v-for="mode in QUICK_CREATE_MODES"
+            :id="`quick-create-tab-${mode}`"
+            :key="mode"
+            type="button"
+            role="tab"
+            :aria-selected="activeCreateMode === mode"
+            :aria-controls="`quick-create-panel-${mode}`"
+            :class="{ active: activeCreateMode === mode }"
+            @click="switchQuickCreateMode(mode)"
+          >
+            {{ QUICK_CREATE_LABELS[mode] }}
+          </button>
+        </div>
+
+        <form
+          v-if="activeCreateMode === 'event'"
+          id="quick-create-panel-event"
+          class="booking-form"
+          role="tabpanel"
+          aria-labelledby="quick-create-tab-event"
+          @submit.prevent="submitNewEvent"
+        >
+          <p class="form-hint">
+            Use events for time blocks, appointments, or anything that belongs
+            on your calendar without going through the booking flow.
+          </p>
+
+          <label>
+            <span>Title</span>
+            <input
+              v-model="newEventForm.title"
+              type="text"
+              required
+              autofocus
+            />
+          </label>
+
+          <label class="checkbox-row">
+            <input v-model="newEventForm.allDay" type="checkbox" />
+            <span>All day</span>
+          </label>
+
+          <div class="field-row">
+            <label>
+              <span>Start date</span>
+              <input v-model="newEventForm.startDate" type="date" required />
+            </label>
+            <label v-if="!newEventForm.allDay">
+              <span>Start time</span>
+              <input v-model="newEventForm.startTime" type="time" required />
+            </label>
+          </div>
+
+          <div class="field-row">
+            <label>
+              <span>End date</span>
+              <input v-model="newEventForm.endDate" type="date" required />
+            </label>
+            <label v-if="!newEventForm.allDay">
+              <span>End time</span>
+              <input v-model="newEventForm.endTime" type="time" required />
+            </label>
+          </div>
+
+          <div class="field-row">
+            <label>
+              <span>Timezone</span>
+              <input v-model="newEventForm.timezone" type="text" required />
+            </label>
+            <label>
+              <span>Location</span>
+              <input v-model="newEventForm.location" type="text" />
+            </label>
+          </div>
+
+          <label>
+            <span>Notes</span>
+            <textarea
+              v-model="newEventForm.notes"
+              rows="3"
+              maxlength="2000"
+              placeholder="Optional"
+            />
+          </label>
+
+          <p v-if="newEventError" class="form-error">{{ newEventError }}</p>
+
+          <div class="modal-actions">
+            <Button
+              size="small"
+              type="button"
+              variant="outline"
+              @click="closeCreateMode"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              type="submit"
+              variant="primary"
+              :disabled="newEventSubmitting"
+            >
+              {{ newEventSubmitting ? "Creating…" : "Create event" }}
+            </Button>
+          </div>
+        </form>
+
+        <form
+          v-else-if="activeCreateMode === 'birthday'"
+          id="quick-create-panel-birthday"
+          class="booking-form"
+          role="tabpanel"
+          aria-labelledby="quick-create-tab-birthday"
+          @submit.prevent="submitNewBirthday"
+        >
+          <p class="form-hint">
+            Birthdays are all-day events that repeat every year.
+          </p>
+
+          <label>
+            <span>Name</span>
+            <input
+              v-model="newBirthdayForm.name"
+              type="text"
+              required
+              autofocus
+            />
+          </label>
+
+          <label>
+            <span>Birthday</span>
+            <input v-model="newBirthdayForm.date" type="date" required />
+          </label>
+
+          <label>
+            <span>Notes</span>
+            <textarea
+              v-model="newBirthdayForm.notes"
+              rows="3"
+              maxlength="2000"
+              placeholder="Optional"
+            />
+          </label>
+
+          <p v-if="newEventError" class="form-error">{{ newEventError }}</p>
+
+          <div class="modal-actions">
+            <Button
+              size="small"
+              type="button"
+              variant="outline"
+              @click="closeCreateMode"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              type="submit"
+              variant="primary"
+              :disabled="newEventSubmitting"
+            >
+              {{ newEventSubmitting ? "Creating…" : "Create birthday" }}
+            </Button>
+          </div>
+        </form>
+
+        <form
+          v-else-if="activeCreateMode === 'reminder'"
+          id="quick-create-panel-reminder"
+          class="booking-form"
+          role="tabpanel"
+          aria-labelledby="quick-create-tab-reminder"
+          @submit.prevent="submitNewReminder"
+        >
+          <p class="form-hint">
+            Reminders use your selected timezone and stay in sync with the ME3
+            agent reminder system.
+          </p>
+
+          <label>
+            <span>Title</span>
+            <input
+              v-model="newReminderForm.title"
+              type="text"
+              required
+              autofocus
+            />
+          </label>
+
+          <div class="field-row">
+            <label>
+              <span>Date</span>
+              <input v-model="newReminderForm.date" type="date" required />
+            </label>
+            <label>
+              <span>Time</span>
+              <input v-model="newReminderForm.time" type="time" required />
+            </label>
+          </div>
+
+          <div class="field-row">
+            <label>
+              <span>Timezone</span>
+              <input v-model="newReminderForm.timezone" type="text" required />
+            </label>
+            <label>
+              <span>Repeat</span>
+              <select v-model="newReminderForm.recurrence">
+                <option value="none">Does not repeat</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </label>
+          </div>
+
+          <label>
+            <span>Notes</span>
+            <textarea
+              v-model="newReminderForm.notes"
+              rows="3"
+              maxlength="2000"
+              placeholder="Optional"
+            />
+          </label>
+
+          <p v-if="newReminderError" class="form-error">
+            {{ newReminderError }}
+          </p>
+
+          <div class="modal-actions">
+            <Button
+              size="small"
+              type="button"
+              variant="outline"
+              @click="closeCreateMode"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              type="submit"
+              variant="primary"
+              :disabled="newReminderSubmitting"
+            >
+              {{ newReminderSubmitting ? "Creating…" : "Create reminder" }}
+            </Button>
+          </div>
+        </form>
+
+        <form
+          v-else
+          id="quick-create-panel-booking"
+          class="booking-form"
+          role="tabpanel"
+          aria-labelledby="quick-create-tab-booking"
+          @submit.prevent="submitNewBooking"
+        >
+          <p class="form-hint">
+            Times use your site’s booking timezone from me.json. Confirmation
+            emails and reminders follow your site’s booking settings.
+          </p>
+
+          <label>
+            <span>Site</span>
+            <select v-model="newBookingForm.username" required>
+              <option disabled value="">Select a site</option>
+              <option
+                v-for="s in sites.sites"
+                :key="s.username"
+                :value="s.username"
+              >
+                {{ s.username }}.me3.app
+              </option>
+            </select>
+          </label>
+
+          <label>
+            <span>Guest name</span>
+            <input
+              v-model="newBookingForm.guestName"
+              type="text"
+              autocomplete="name"
+              required
+              autofocus
+            />
+          </label>
+
+          <label>
+            <span>Guest email</span>
+            <input
+              v-model="newBookingForm.guestEmail"
+              type="email"
+              autocomplete="email"
+              required
+            />
+          </label>
+
+          <div class="field-row">
+            <label>
+              <span>Date</span>
+              <input v-model="newBookingForm.date" type="date" required />
+            </label>
+            <label>
+              <span>Start time</span>
+              <input v-model="newBookingForm.startTime" type="time" required />
+            </label>
+          </div>
+
+          <label>
+            <span>Duration (minutes)</span>
+            <select v-model.number="newBookingForm.durationMinutes">
+              <option :value="15">15</option>
+              <option :value="30">30</option>
+              <option :value="45">45</option>
+              <option :value="60">60</option>
+              <option :value="90">90</option>
+              <option :value="120">120</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Notes</span>
+            <textarea
+              v-model="newBookingForm.notes"
+              rows="3"
+              maxlength="2000"
+              placeholder="Optional"
+            />
+          </label>
+
+          <p v-if="newBookingError" class="form-error">{{ newBookingError }}</p>
+
+          <div class="modal-actions">
+            <Button
+              size="small"
+              type="button"
+              variant="outline"
+              @click="closeCreateMode"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              type="submit"
+              variant="primary"
+              :disabled="newBookingSubmitting"
+            >
+              {{ newBookingSubmitting ? "Creating…" : "Create booking" }}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div
+      v-if="activeCreateMode === 'import'"
+      class="modal-overlay"
+      @click.self="closeCreateMode"
+    >
+      <div
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-calendar-title"
+      >
+        <div class="modal-header">
+          <h2 id="import-calendar-title">Import calendar</h2>
+          <button
+            type="button"
+            class="icon-close"
+            aria-label="Close"
+            @click="closeCreateMode"
+          >
+            ×
+          </button>
+        </div>
+
+        <form class="booking-form" @submit.prevent="submitImport">
+          <p class="form-hint">
+            Upload an `.ics` export to bring an external calendar into ME3 as a
+            read-only source.
+          </p>
+
+          <label>
+            <span>Calendar name</span>
+            <input
+              v-model="importForm.name"
+              type="text"
+              placeholder="Optional"
+            />
+          </label>
+
+          <label>
+            <span>.ics file</span>
+            <input
+              accept=".ics,text/calendar"
+              type="file"
+              @change="onImportFileChange"
+            />
+          </label>
+
+          <p v-if="importError" class="form-error">{{ importError }}</p>
+
+          <div class="modal-actions">
+            <Button
+              size="small"
+              type="button"
+              variant="outline"
+              @click="closeCreateMode"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              type="submit"
+              variant="primary"
+              :disabled="importSubmitting"
+            >
+              {{ importSubmitting ? "Importing…" : "Import calendar" }}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+:global(body) {
+  background: var(--color-bg);
+}
+
+.calendar-spike {
+  --cal-grid: color-mix(in oklab, var(--color-border) 88%, transparent);
+  --cal-surface: var(--color-bg);
+  --cal-subtle: var(--color-bg-subtle);
+  --cal-muted: var(--color-text-muted);
+  --cal-hover: color-mix(in oklab, var(--color-text) 6%, transparent);
+  --cal-today-bg: color-mix(in oklab, var(--color-text) 5%, transparent);
+  --cal-chip: color-mix(in oklab, var(--color-text) 8%, var(--color-bg));
+  --cal-accent: #7dbaf9;
+}
+
+.ops-page {
+  min-height: 100vh;
+  color: var(--color-text);
+}
+
+.main {
+  max-width: 1680px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 28px 40px;
+}
+
+.cal-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0px 0 6px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.cal-toolbar-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cal-arrows {
+  display: flex;
+  gap: 4px;
+}
+
+.cal-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.cal-arrow:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+}
+
+.cal-arrow:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.cal-toolbar-heading {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.cal-view-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+}
+
+.cal-view-toggle button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cal-view-toggle button.is-on {
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-shadow: 0 0 0 1px var(--color-border-strong);
+}
+
+.cal-loading,
+.cal-error-banner,
+.cal-status-banner {
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+
+.cal-error-banner {
+  color: #b33b2e;
+}
+
+.cal-status-banner {
+  color: var(--color-text);
+}
+
+.cal-shell {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.cal-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cal-create-wrap {
+  position: relative;
+}
+
+.cal-create {
+  width: 100%;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-text);
+  color: var(--color-bg);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+}
+
+.cal-create:hover {
+  opacity: 0.92;
+}
+
+.cal-create-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-bg);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.12);
+}
+
+.cal-create-menu button {
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cal-create-menu button:hover {
+  background: var(--color-bg-subtle);
+}
+
+.cal-filters-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.cal-filters {
+  padding-top: 4px;
+}
+
+.cal-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cal-filter-input {
+  accent-color: var(--color-text);
+}
+
+.cal-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.cal-swatch--neutral {
+  background: linear-gradient(
+    135deg,
+    var(--color-border-strong) 0%,
+    var(--color-text-muted) 100%
+  );
+}
+
+.cal-swatch--muted {
+  background: #9aa0a6;
+}
+
+.cal-filter-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-board-wrap {
+  min-width: 0;
+}
+
+.board-calendar-select-wrap {
+  display: grid;
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.board-calendar-select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.cal-detail-wrap {
+  min-width: 0;
+  position: sticky;
+  top: 12px;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.modal-card {
+  width: min(100%, 480px);
+  max-height: min(90vh, 720px);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg);
+  padding: 24px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.12);
+}
+
+.quick-create-modal {
+  width: min(100%, 560px);
+}
+
+.event-detail-modal {
+  width: min(100%, 520px);
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.modal-kicker {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.event-detail-summary,
+.event-detail-site {
+  margin: 0 0 14px;
+  color: var(--color-text-muted);
+}
+
+.event-detail-time {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.event-detail-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0 0;
+}
+
+.event-detail-row {
+  display: grid;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.event-detail-row dt,
+.event-detail-notes h3 {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.event-detail-row dd {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.event-detail-notes {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.event-detail-notes h3 {
+  margin: 0 0 8px;
+}
+
+.event-detail-notes p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.event-detail-action {
+  margin-top: 18px;
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.event-detail-action--danger {
+  margin-top: 10px;
+}
+
+.event-detail-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.icon-close {
+  border: 0;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.create-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-subtle);
+}
+
+.create-tabs button {
+  min-width: 84px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.create-tabs button:hover {
+  color: var(--color-text);
+}
+
+.create-tabs button.active {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+.booking-form {
+  display: grid;
+  gap: 14px;
+}
+
+.form-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.45;
+}
+
+.booking-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.checkbox-row {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.booking-form input,
+.booking-form select,
+.booking-form textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.form-error {
+  margin: 0;
+  font-size: 13px;
+  color: #b33b2e;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+@media (max-width: 1100px) {
+  .cal-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .cal-detail-wrap {
+    position: static;
+  }
+
+  .cal-sidebar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .cal-create {
+    grid-column: 1 / -1;
+  }
+
+  .cal-filters {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .ops-page {
+    padding: 0;
+  }
+
+  .main {
+    padding: 16px;
+  }
+
+  .cal-toolbar {
+    display: none;
+  }
+
+  .cal-mobile-nav-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .cal-mobile-nav-period {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .cal-mobile-nav-period .cal-arrow {
+    width: 32px;
+    height: 32px;
+    border: 0;
+    background: transparent;
+  }
+
+  .cal-mobile-nav-title {
+    overflow: hidden;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cal-view-toggle--mobile-nav {
+    flex-wrap: nowrap;
+    gap: 2px;
+    padding: 2px;
+  }
+
+  .cal-view-toggle--mobile-nav button {
+    padding: 7px 9px;
+    font-size: 11px;
+  }
+
+  .cal-mobile-create-wrap {
+    position: relative;
+  }
+
+  .cal-create-mobile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--color-text);
+    color: var(--color-bg);
+    cursor: pointer;
+  }
+
+  .cal-create-menu--mobile-nav {
+    position: fixed;
+    top: 58px;
+    right: 12px;
+    left: auto;
+    width: min(220px, calc(100vw - 24px));
+  }
+
+  .cal-sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .cal-sidebar {
+    display: none;
+  }
+
+  .cal-shell {
+    display: block;
+  }
+
+  .cal-board-wrap {
+    width: 100%;
+  }
+
+  .field-row {
+    grid-template-columns: 1fr;
+  }
+
+  .create-tabs {
+    display: flex;
+  }
+
+  .create-tabs button {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 10px;
+  }
+}
+</style>

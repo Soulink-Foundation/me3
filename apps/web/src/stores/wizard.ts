@@ -1,0 +1,4313 @@
+import { defineStore } from "pinia";
+import { ref, computed, watch } from "vue";
+import type {
+  Me3Profile,
+  Me3Button,
+  Me3IntentSubscribe,
+  Me3IntentBook,
+  Me3ActionDefinition,
+  Me3Service,
+  Me3BusinessContext,
+} from "me3-protocol";
+import { productSendsPurchaseConfirmation } from "../../../../shared/product-purchase-confirmation";
+import { API_BASE } from "../api";
+import { type VibeId, defaultVibe, vibeIds } from "../styles/vibes";
+import {
+  getStoredTestimonialPlacement,
+  normalizeTestimonialPlacement,
+  resolveSiteSectionPaths,
+  TESTIMONIAL_PLACEMENT_LINK_KEY,
+  type TestimonialPlacement,
+} from "../utils/site-sections";
+
+export interface WizardProfile {
+  name: string;
+  handle: string;
+  location: string;
+  bio: string;
+  avatar: string | null; // URL or data URL
+  banner: string | null; // URL or data URL
+  avatarBlob: Blob | null;
+  bannerBlob: Blob | null;
+  // Original uploaded images (kept in-memory only, not persisted).
+  // Used to support re-cropping UX for uploads.
+  avatarOriginalBlob: Blob | null;
+  bannerOriginalBlob: Blob | null;
+  links: Record<string, string>;
+  linkOrder: string[]; // Order of link keys for drag-and-drop
+  buttons: Me3Button[];
+  footer: WizardFooterConfig;
+  newsletter: WizardNewsletterConfig;
+  booking: WizardBookingConfig;
+  gift: WizardGiftConfig;
+  business: WizardBusinessConfig;
+}
+
+export interface WizardNewsletterConfig {
+  enabled: boolean;
+  title: string;
+  description: string;
+}
+
+export interface WizardBookingPricing {
+  enabled: boolean;
+  suggestedAmount: number;
+  currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+  minimumAmount: 5;
+  allowFlexiblePricing?: boolean;
+  allowFree: boolean;
+}
+
+export interface WizardGiftConfig {
+  enabled: boolean;
+  title: string;
+  description: string;
+  suggestedAmount: number;
+  currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+  minimumAmount: 5;
+  icon?: string;
+}
+
+export interface WizardBusinessConfig {
+  positioningStatement: string;
+  audience: string;
+  primaryProblem: string;
+  solution: string;
+  targetMarket: string;
+  primaryOutcome: string;
+}
+
+export type WizardBookingDuration = 15 | 30 | 45 | 60 | 75 | 90 | 120;
+export type WizardBookingBufferTime = 0 | 5 | 10 | 15 | 30;
+export type WizardBookingType = "one_to_one" | "class" | "retreat";
+export type WizardBookingWeekday =
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
+
+const VALID_BOOKING_DURATIONS = [15, 30, 45, 60, 75, 90, 120] as const;
+
+function isWizardBookingDuration(
+  value: unknown,
+): value is WizardBookingDuration {
+  return (
+    typeof value === "number" &&
+    (VALID_BOOKING_DURATIONS as readonly number[]).includes(value)
+  );
+}
+
+export interface WizardBookingOffer {
+  id: string;
+  title: string;
+  description: string;
+  duration: WizardBookingDuration;
+  pricing?: WizardBookingPricing;
+}
+
+export interface WizardClassOffer {
+  id: string;
+  title: string;
+  description: string;
+  duration: WizardBookingDuration;
+  timezone: string;
+  recurrence: {
+    frequency: "weekly" | "biweekly";
+    weekday: WizardBookingWeekday;
+    startTime: string;
+  };
+  pricing?: WizardBookingPricing;
+  capacity: number | null;
+}
+
+/** Fixed-date multi-day offering (wall times in `timezone`). */
+export interface WizardRetreatOffer {
+  id: string;
+  title: string;
+  description: string;
+  /** Derived display length from the configured window (must be >= 1). */
+  durationDays: number;
+  startDate: string;
+  startTime: string;
+  endDate: string;
+  endTime: string;
+  timezone: string;
+  pricing?: WizardBookingPricing;
+  capacity: number | null;
+}
+
+export interface WizardBookingConfig {
+  enabled: boolean;
+  oneToOneEnabled: boolean;
+  classEnabled: boolean;
+  retreatEnabled: boolean;
+  offers: WizardBookingOffer[];
+  classOffers: WizardClassOffer[];
+  retreatOffers: WizardRetreatOffer[];
+  title: string;
+  description: string;
+  duration: WizardBookingDuration;
+  bufferTime: WizardBookingBufferTime;
+  reminders: {
+    enabled: boolean;
+    reminder24h: boolean;
+    reminder2h: boolean;
+  };
+  timezone: string;
+  availability: {
+    monday: string[];
+    tuesday: string[];
+    wednesday: string[];
+    thursday: string[];
+    friday: string[];
+    saturday: string[];
+    sunday: string[];
+  };
+  pricing?: WizardBookingPricing;
+}
+
+export interface WizardFooterConfig {
+  mode: "default" | "custom" | "none";
+  text: string;
+  linkText: string;
+  linkUrl: string;
+}
+
+export interface WizardPage {
+  title: string;
+  slug: string;
+  slugCustomized?: boolean;
+  content: string;
+  images: WizardPageImage[];
+  visible?: boolean;
+}
+
+export interface WizardPageImage {
+  /**
+   * Stable id embedded into the editor document as `data-image-id`.
+   * Used to map editor <img> tags back to blobs for publish/download.
+   */
+  id: string;
+  blob: Blob;
+  tempUrl: string;
+  mimeType: string;
+  ext: string;
+  alt?: string;
+}
+
+export type WizardPostImage = WizardPageImage;
+
+export type WizardPostType = "article" | "video";
+
+export interface WizardPostMedia {
+  url?: string;
+  duration?: number;
+  thumbnail?: string;
+  provider?: string;
+  id?: string;
+}
+
+export interface WizardPost {
+  title: string;
+  slug: string;
+  slugCustomized?: boolean;
+  content: string;
+  images: WizardPostImage[];
+  type?: WizardPostType;
+  caption?: string;
+  media?: WizardPostMedia;
+  mediaFile?: File | null;
+  publishedAt?: string;
+  excerpt?: string;
+  emailedAt?: string;
+  draft?: boolean;
+}
+
+/**
+ * Standalone social drafts are edited under /content (`_content-` slugs). Legacy wizard
+ * drafts used `_social-`. Neither belongs in the profile-site blog step.
+ */
+function isStandaloneContentOrLegacyWizardSocialSlug(slug: string): boolean {
+  return slug.startsWith("_social-") || slug.startsWith("_content-");
+}
+
+function sanitizeWizardPosts(input: unknown): WizardPost[] {
+  if (!Array.isArray(input)) return [];
+  const next: WizardPost[] = [];
+  for (const post of input) {
+    if (!post || typeof post !== "object") continue;
+    const entry = post as Record<string, unknown>;
+    const title = typeof entry.title === "string" ? entry.title : "";
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    if (!title || !slug) continue;
+    if (
+      (typeof entry.type === "string" && entry.type === "social") ||
+      isStandaloneContentOrLegacyWizardSocialSlug(slug)
+    ) {
+      continue;
+    }
+    const type = entry.type === "video" ? "video" : "article";
+    next.push({
+      title,
+      slug,
+      slugCustomized: inferSlugCustomized(
+        title,
+        slug,
+        "post",
+        entry.slugCustomized,
+      ),
+      content: typeof entry.content === "string" ? entry.content : "",
+      images: [],
+      type,
+      caption: typeof entry.caption === "string" ? entry.caption : "",
+      media:
+        entry.media && typeof entry.media === "object"
+          ? (entry.media as WizardPostMedia)
+          : undefined,
+      mediaFile: null,
+      publishedAt:
+        typeof entry.publishedAt === "string" ? entry.publishedAt : undefined,
+      excerpt: typeof entry.excerpt === "string" ? entry.excerpt : undefined,
+      emailedAt:
+        typeof entry.emailedAt === "string" ? entry.emailedAt : undefined,
+      draft: typeof entry.draft === "boolean" ? entry.draft : undefined,
+    });
+  }
+  return next;
+}
+
+export type WizardProductImage = WizardPageImage;
+
+export type WizardProductConfirmationEmail = {
+  enabled?: boolean;
+  subject?: string;
+  message?: string;
+};
+
+export interface WizardProduct {
+  title: string;
+  slug: string;
+  slugCustomized?: boolean;
+  content: string;
+  images: WizardProductImage[];
+  price: number;
+  currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+  available: boolean;
+  publishedAt?: string;
+  excerpt?: string;
+  confirmationEmail?: WizardProductConfirmationEmail;
+}
+
+export interface WizardTestimonial {
+  name: string;
+  handle?: string;
+  /** Preview URL (https, site files URL, or temporary blob: URL). Never persisted as data: in me.json. */
+  avatar?: string;
+  /** In-memory only; uploaded to R2 on publish as files/testimonial-{n}.{ext}. */
+  avatarBlob?: Blob | null;
+  quote: string;
+  profileUrl?: string;
+}
+
+type ExtendedMe3Profile = Omit<Me3Profile, "testimonialDisplay"> & {
+  blogTitle?: string;
+  shopTitle?: string;
+  testimonialDisplay?: TestimonialPlacement;
+  testimonialsTitle?: string;
+  business?: Me3BusinessContext;
+  services?: Me3Service[];
+  actions?: Record<string, Me3ActionDefinition>;
+};
+
+type PublishedBookingOffer = {
+  id: string;
+  title: string;
+  description?: string;
+  duration?: number;
+  pricing?: WizardBookingPricing;
+};
+
+type PublishedBookingClass = {
+  id: string;
+  title: string;
+  description?: string;
+  duration?: number;
+  timezone?: string;
+  recurrence?: {
+    frequency?: "weekly" | "biweekly";
+    weekday?: WizardBookingWeekday;
+    startTime?: string;
+  };
+  pricing?: WizardBookingPricing;
+  capacity?: number | null;
+};
+
+type PublishedBookingRetreat = {
+  id: string;
+  title: string;
+  description?: string;
+  durationDays?: number;
+  startDate: string;
+  startTime: string;
+  endDate: string;
+  endTime: string;
+  timezone?: string;
+  pricing?: WizardBookingPricing;
+  capacity?: number | null;
+};
+
+type PublishedBookingType = {
+  id: WizardBookingType;
+  type: WizardBookingType;
+  label: string;
+  title?: string;
+  description?: string;
+  offers?: PublishedBookingOffer[];
+  availability?: {
+    timezone?: string;
+    windows?: Record<string, string[]>;
+  };
+  classes?: PublishedBookingClass[];
+  retreats?: PublishedBookingRetreat[];
+};
+
+type ExtendedMe3IntentBook = Me3IntentBook & {
+  offers?: PublishedBookingOffer[];
+  classes?: PublishedBookingClass[];
+  retreats?: PublishedBookingRetreat[];
+  bookingTypes?: PublishedBookingType[];
+  pricing?: WizardBookingPricing;
+  reminders?: Partial<WizardBookingConfig["reminders"]>;
+};
+
+const DEFAULT_BLOG_TITLE = "Blog";
+const DEFAULT_SHOP_TITLE = "Offerings";
+const DEFAULT_TESTIMONIALS_TITLE = "Testimonials";
+
+const STORAGE_KEY = "me3_wizard_state";
+
+function generateSlug(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 30);
+}
+
+function defaultWizardBookingPricing(): WizardBookingPricing {
+  return {
+    enabled: false,
+    suggestedAmount: 50,
+    currency: "USD",
+    minimumAmount: 5,
+    allowFlexiblePricing: true,
+    allowFree: false,
+  };
+}
+
+function createDefaultBookingOffer(
+  overrides: Partial<WizardBookingOffer> = {},
+): WizardBookingOffer {
+  const title = typeof overrides.title === "string" ? overrides.title : "";
+  const fallbackId = generateSlug(title) || "book-session";
+  const pricing =
+    overrides.pricing === undefined
+      ? undefined
+      : { ...defaultWizardBookingPricing(), ...overrides.pricing };
+
+  return {
+    id:
+      typeof overrides.id === "string" && overrides.id.trim().length > 0
+        ? overrides.id
+        : fallbackId,
+    title,
+    description:
+      typeof overrides.description === "string" ? overrides.description : "",
+    duration: (overrides.duration as WizardBookingDuration) || 30,
+    ...(pricing ? { pricing } : {}),
+  };
+}
+
+function createDefaultClassOffer(
+  overrides: Partial<WizardClassOffer> = {},
+): WizardClassOffer {
+  const title = typeof overrides.title === "string" ? overrides.title : "";
+  const fallbackId = generateSlug(title) || "weekly-class";
+  const pricing =
+    overrides.pricing === undefined
+      ? undefined
+      : { ...defaultWizardBookingPricing(), ...overrides.pricing };
+  const recurrence =
+    overrides.recurrence && typeof overrides.recurrence === "object"
+      ? overrides.recurrence
+      : undefined;
+
+  return {
+    id:
+      typeof overrides.id === "string" && overrides.id.trim().length > 0
+        ? overrides.id
+        : fallbackId,
+    title,
+    description:
+      typeof overrides.description === "string" ? overrides.description : "",
+    duration: (overrides.duration as WizardBookingDuration) || 60,
+    timezone:
+      typeof overrides.timezone === "string" && overrides.timezone.trim().length > 0
+        ? overrides.timezone
+        : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    recurrence: {
+      frequency: recurrence?.frequency === "biweekly" ? "biweekly" : "weekly",
+      weekday:
+        recurrence?.weekday &&
+        [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+          "sunday",
+        ].includes(recurrence.weekday)
+          ? recurrence.weekday
+          : "monday",
+      startTime:
+        typeof recurrence?.startTime === "string" &&
+        /^\d{2}:\d{2}$/.test(recurrence.startTime)
+          ? recurrence.startTime
+          : "18:00",
+    },
+    ...(pricing ? { pricing } : {}),
+    capacity: (() => {
+      if (typeof overrides.capacity === "number") {
+        return overrides.capacity > 0 ? Math.round(overrides.capacity) : null;
+      }
+      if (overrides.capacity === null) {
+        return null;
+      }
+      return 12;
+    })(),
+  };
+}
+
+function createDefaultRetreatOffer(
+  overrides: Partial<WizardRetreatOffer> = {},
+): WizardRetreatOffer {
+  const title = typeof overrides.title === "string" ? overrides.title : "";
+  const fallbackId = generateSlug(title) || "retreat";
+  const pricing =
+    overrides.pricing === undefined
+      ? undefined
+      : { ...defaultWizardBookingPricing(), ...overrides.pricing };
+
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  const todayStr = `${y}-${m}-${day}`;
+
+  const startDate =
+    typeof overrides.startDate === "string" && overrides.startDate.trim().length > 0
+      ? overrides.startDate
+      : todayStr;
+  const startTime =
+    typeof overrides.startTime === "string" && /^\d{2}:\d{2}$/.test(overrides.startTime)
+      ? overrides.startTime
+      : "09:00";
+  const endDate =
+    typeof overrides.endDate === "string" && overrides.endDate.trim().length > 0
+      ? overrides.endDate
+      : todayStr;
+  const endTime =
+    typeof overrides.endTime === "string" && /^\d{2}:\d{2}$/.test(overrides.endTime)
+      ? overrides.endTime
+      : "17:00";
+
+  return {
+    id:
+      typeof overrides.id === "string" && overrides.id.trim().length > 0
+        ? overrides.id
+        : fallbackId,
+    title,
+    description:
+      typeof overrides.description === "string" ? overrides.description : "",
+    durationDays: deriveRetreatDurationDays({
+      startDate,
+      startTime,
+      endDate,
+      endTime,
+      durationDays: overrides.durationDays,
+    }),
+    startDate,
+    startTime,
+    endDate,
+    endTime,
+    timezone:
+      typeof overrides.timezone === "string" && overrides.timezone.trim().length > 0
+        ? overrides.timezone
+        : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    ...(pricing ? { pricing } : {}),
+    capacity: (() => {
+      if (typeof overrides.capacity === "number") {
+        return overrides.capacity > 0 ? Math.round(overrides.capacity) : null;
+      }
+      if (overrides.capacity === null) {
+        return null;
+      }
+      return 12;
+    })(),
+  };
+}
+
+function parseRetreatWallDateTime(
+  date: string | undefined,
+  time: string | undefined,
+): number | null {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (!time || !/^\d{2}:\d{2}$/.test(time)) return null;
+
+  const timestamp = Date.parse(`${date}T${time}:00Z`);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function deriveRetreatDurationDays(input: {
+  startDate?: string;
+  startTime?: string;
+  endDate?: string;
+  endTime?: string;
+  durationDays?: number;
+}): number {
+  const startMs = parseRetreatWallDateTime(input.startDate, input.startTime);
+  const endMs = parseRetreatWallDateTime(input.endDate, input.endTime);
+
+  if (startMs !== null && endMs !== null && endMs > startMs) {
+    return Math.max(1, Math.ceil((endMs - startMs) / (24 * 60 * 60 * 1000)));
+  }
+
+  if (
+    typeof input.durationDays === "number" &&
+    Number.isFinite(input.durationDays) &&
+    input.durationDays >= 1
+  ) {
+    return Math.round(input.durationDays);
+  }
+
+  return 1;
+}
+
+function normalizeWizardBookingOffers(input: unknown): WizardBookingOffer[] {
+  if (!Array.isArray(input)) return [];
+
+  const offers: WizardBookingOffer[] = [];
+  const usedIds = new Set<string>();
+
+  for (const rawOffer of input) {
+    if (!rawOffer || typeof rawOffer !== "object") continue;
+    const offer = rawOffer as Partial<WizardBookingOffer>;
+    const normalized = createDefaultBookingOffer({
+      id:
+        typeof offer.id === "string" && offer.id.trim().length > 0
+          ? offer.id.trim()
+          : generateSlug(typeof offer.title === "string" ? offer.title : "") ||
+            "book-session",
+      title: typeof offer.title === "string" ? offer.title : "",
+      description:
+        typeof offer.description === "string" ? offer.description : "",
+    duration: isWizardBookingDuration(offer.duration) ? offer.duration : 30,
+      pricing:
+        offer.pricing && typeof offer.pricing === "object"
+          ? {
+              ...defaultWizardBookingPricing(),
+              ...offer.pricing,
+            }
+          : undefined,
+    });
+
+    const baseId = normalized.id || "book-session";
+    let nextId = baseId;
+    let counter = 1;
+    while (usedIds.has(nextId)) {
+      nextId = `${baseId}-${counter++}`;
+    }
+    normalized.id = nextId;
+    usedIds.add(nextId);
+    offers.push(normalized);
+  }
+
+  return offers;
+}
+
+function normalizeWizardClassOffers(input: unknown): WizardClassOffer[] {
+  if (!Array.isArray(input)) return [];
+
+  const offers: WizardClassOffer[] = [];
+  const usedIds = new Set<string>();
+
+  for (const rawClass of input) {
+    if (!rawClass || typeof rawClass !== "object") continue;
+    const classOffer = rawClass as Partial<WizardClassOffer>;
+    const normalized = createDefaultClassOffer({
+      id:
+        typeof classOffer.id === "string" && classOffer.id.trim().length > 0
+          ? classOffer.id.trim()
+          : generateSlug(
+                typeof classOffer.title === "string" ? classOffer.title : "",
+              ) || "weekly-class",
+      title: typeof classOffer.title === "string" ? classOffer.title : "",
+      description:
+        typeof classOffer.description === "string" ? classOffer.description : "",
+      duration: isWizardBookingDuration(classOffer.duration)
+        ? classOffer.duration
+        : 60,
+      timezone:
+        typeof classOffer.timezone === "string" ? classOffer.timezone : undefined,
+      recurrence:
+        classOffer.recurrence && typeof classOffer.recurrence === "object"
+          ? classOffer.recurrence
+          : undefined,
+      pricing:
+        classOffer.pricing && typeof classOffer.pricing === "object"
+          ? {
+              ...defaultWizardBookingPricing(),
+              ...classOffer.pricing,
+            }
+          : undefined,
+      capacity:
+        "capacity" in classOffer
+          ? typeof classOffer.capacity === "number" && classOffer.capacity > 0
+            ? Math.round(classOffer.capacity)
+            : null
+          : undefined,
+    });
+
+    const baseId = normalized.id || "weekly-class";
+    let nextId = baseId;
+    let counter = 1;
+    while (usedIds.has(nextId)) {
+      nextId = `${baseId}-${counter++}`;
+    }
+    normalized.id = nextId;
+    usedIds.add(nextId);
+    offers.push(normalized);
+  }
+
+  return offers;
+}
+
+function normalizeWizardRetreatOffers(input: unknown): WizardRetreatOffer[] {
+  if (!Array.isArray(input)) return [];
+
+  const offers: WizardRetreatOffer[] = [];
+  const usedIds = new Set<string>();
+
+  for (const raw of input) {
+    if (!raw || typeof raw !== "object") continue;
+    const retreat = raw as Partial<WizardRetreatOffer>;
+    const normalized = createDefaultRetreatOffer({
+      id:
+        typeof retreat.id === "string" && retreat.id.trim().length > 0
+          ? retreat.id.trim()
+          : generateSlug(typeof retreat.title === "string" ? retreat.title : "") ||
+            "retreat",
+      title: typeof retreat.title === "string" ? retreat.title : "",
+      description:
+        typeof retreat.description === "string" ? retreat.description : "",
+      durationDays:
+        typeof retreat.durationDays === "number" && retreat.durationDays >= 1
+          ? Math.round(retreat.durationDays)
+          : undefined,
+      startDate: typeof retreat.startDate === "string" ? retreat.startDate : undefined,
+      startTime: typeof retreat.startTime === "string" ? retreat.startTime : undefined,
+      endDate: typeof retreat.endDate === "string" ? retreat.endDate : undefined,
+      endTime: typeof retreat.endTime === "string" ? retreat.endTime : undefined,
+      timezone: typeof retreat.timezone === "string" ? retreat.timezone : undefined,
+      pricing:
+        retreat.pricing && typeof retreat.pricing === "object"
+          ? {
+              ...defaultWizardBookingPricing(),
+              ...retreat.pricing,
+            }
+          : undefined,
+      capacity:
+        "capacity" in retreat
+          ? typeof retreat.capacity === "number" && retreat.capacity > 0
+            ? Math.round(retreat.capacity)
+            : null
+          : undefined,
+    });
+
+    const baseId = normalized.id || "retreat";
+    let nextId = baseId;
+    let counter = 1;
+    while (usedIds.has(nextId)) {
+      nextId = `${baseId}-${counter++}`;
+    }
+    normalized.id = nextId;
+    usedIds.add(nextId);
+    offers.push(normalized);
+  }
+
+  return offers;
+}
+
+function legacyBookingToDefaultOffer(input: {
+  title?: unknown;
+  description?: unknown;
+  duration?: unknown;
+  pricing?: unknown;
+}): WizardBookingOffer {
+  const pricing =
+    input.pricing && typeof input.pricing === "object"
+      ? {
+          ...defaultWizardBookingPricing(),
+          ...(input.pricing as Partial<WizardBookingPricing>),
+        }
+      : undefined;
+
+  return createDefaultBookingOffer({
+    title: typeof input.title === "string" ? input.title : "",
+    description:
+      typeof input.description === "string" ? input.description : "",
+    duration: isWizardBookingDuration(input.duration) ? input.duration : 30,
+    pricing,
+  });
+}
+
+function normalizeWizardBookingConfig(input: unknown): WizardBookingConfig {
+  const record =
+    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const offers = normalizeWizardBookingOffers(record.offers);
+  const classOffers = normalizeWizardClassOffers(record.classOffers);
+  const retreatOffers = normalizeWizardRetreatOffers(record.retreatOffers);
+  const oneToOneEnabled =
+    typeof record.oneToOneEnabled === "boolean"
+      ? record.oneToOneEnabled
+      : offers.length > 0 ||
+        typeof record.title === "string" ||
+        typeof record.description === "string" ||
+        record.pricing !== undefined;
+  const classEnabled =
+    typeof record.classEnabled === "boolean"
+      ? record.classEnabled
+      : classOffers.length > 0 ||
+        Array.isArray((record as { classes?: unknown[] }).classes);
+  const retreatEnabled =
+    typeof record.retreatEnabled === "boolean"
+      ? record.retreatEnabled
+      : retreatOffers.length > 0 ||
+        Array.isArray((record as { retreats?: unknown[] }).retreats);
+  const normalizedOffers = offers.length > 0
+    ? offers
+    : [legacyBookingToDefaultOffer(record)];
+  const normalizedClassOffers = classOffers.length > 0
+    ? classOffers
+    : [createDefaultClassOffer()];
+  const normalizedRetreatOffers = retreatOffers.length > 0
+    ? retreatOffers
+    : [createDefaultRetreatOffer()];
+  const primaryOffer = normalizedOffers[0];
+
+  // Heading title/description are separate from per-offer copy; do not mirror from offers[0].
+  const headingTitle =
+    typeof record.title === "string" ? record.title : primaryOffer?.title || "";
+  const headingDescription =
+    typeof record.description === "string"
+      ? record.description
+      : primaryOffer?.description || "";
+
+  return {
+    enabled: typeof record.enabled === "boolean" ? record.enabled : true,
+    oneToOneEnabled,
+    classEnabled,
+    retreatEnabled,
+    offers: normalizedOffers,
+    classOffers: normalizedClassOffers,
+    retreatOffers: normalizedRetreatOffers,
+    title: headingTitle,
+    description: headingDescription,
+    duration: primaryOffer?.duration || 30,
+    bufferTime:
+      record.bufferTime === 0 ||
+      record.bufferTime === 5 ||
+      record.bufferTime === 10 ||
+      record.bufferTime === 15 ||
+      record.bufferTime === 30
+        ? record.bufferTime
+        : 0,
+    reminders: {
+      enabled:
+        record.reminders &&
+        typeof record.reminders === "object" &&
+        typeof (record.reminders as Record<string, unknown>).enabled === "boolean"
+          ? Boolean((record.reminders as Record<string, unknown>).enabled)
+          : true,
+      reminder24h:
+        record.reminders &&
+        typeof record.reminders === "object" &&
+        typeof (record.reminders as Record<string, unknown>).reminder24h ===
+          "boolean"
+          ? Boolean(
+              (record.reminders as Record<string, unknown>).reminder24h,
+            )
+          : true,
+      reminder2h:
+        record.reminders &&
+        typeof record.reminders === "object" &&
+        typeof (record.reminders as Record<string, unknown>).reminder2h ===
+          "boolean"
+          ? Boolean((record.reminders as Record<string, unknown>).reminder2h)
+          : true,
+    },
+    timezone:
+      typeof record.timezone === "string" && record.timezone.trim().length > 0
+        ? record.timezone
+        : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    availability: {
+      monday: Array.isArray((record.availability as any)?.monday)
+        ? ((record.availability as any).monday as string[])
+        : ["09:00-17:00"],
+      tuesday: Array.isArray((record.availability as any)?.tuesday)
+        ? ((record.availability as any).tuesday as string[])
+        : ["09:00-17:00"],
+      wednesday: Array.isArray((record.availability as any)?.wednesday)
+        ? ((record.availability as any).wednesday as string[])
+        : ["09:00-17:00"],
+      thursday: Array.isArray((record.availability as any)?.thursday)
+        ? ((record.availability as any).thursday as string[])
+        : ["09:00-17:00"],
+      friday: Array.isArray((record.availability as any)?.friday)
+        ? ((record.availability as any).friday as string[])
+        : ["09:00-17:00"],
+      saturday: Array.isArray((record.availability as any)?.saturday)
+        ? ((record.availability as any).saturday as string[])
+        : [],
+      sunday: Array.isArray((record.availability as any)?.sunday)
+        ? ((record.availability as any).sunday as string[])
+        : [],
+    },
+    pricing: primaryOffer?.pricing || defaultWizardBookingPricing(),
+  };
+}
+
+function syncBookingLegacyFields(
+  booking: Omit<WizardBookingConfig, "title" | "description" | "duration" | "pricing"> &
+    Partial<Pick<WizardBookingConfig, "title" | "description" | "duration" | "pricing">>,
+): WizardBookingConfig {
+  const primaryOffer = booking.offers[0] || createDefaultBookingOffer();
+  return {
+    ...booking,
+    oneToOneEnabled:
+      typeof booking.oneToOneEnabled === "boolean"
+        ? booking.oneToOneEnabled
+        : true,
+    classEnabled:
+      typeof booking.classEnabled === "boolean" ? booking.classEnabled : false,
+    retreatEnabled:
+      typeof booking.retreatEnabled === "boolean" ? booking.retreatEnabled : false,
+    classOffers:
+      Array.isArray(booking.classOffers) && booking.classOffers.length > 0
+        ? booking.classOffers
+        : [createDefaultClassOffer()],
+    retreatOffers:
+      Array.isArray(booking.retreatOffers) && booking.retreatOffers.length > 0
+        ? booking.retreatOffers
+        : [createDefaultRetreatOffer()],
+    // `title` / `description` stay as stored booking-level heading copy; not mirrored from offers.
+    title: booking.title ?? "",
+    description: booking.description ?? "",
+    duration: primaryOffer.duration,
+    pricing: primaryOffer.pricing || defaultWizardBookingPricing(),
+  };
+}
+
+function ensureUniqueSlug(
+  baseSlug: string,
+  isTaken: (candidate: string) => boolean,
+): string {
+  let slug = baseSlug;
+  let counter = 1;
+
+  while (isTaken(slug)) {
+    slug = `${baseSlug}-${counter++}`;
+  }
+
+  return slug;
+}
+
+function inferSlugCustomized(
+  title: string,
+  slug: string,
+  fallback: string,
+  stored?: unknown,
+): boolean {
+  if (typeof stored === "boolean") return stored;
+  return slug !== (generateSlug(title) || fallback);
+}
+
+function normalizeBusinessField(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function buildPositioningStatement(input: {
+  audience?: string;
+  primaryProblem?: string;
+  solution?: string;
+}): string {
+  const audience = normalizeBusinessField(input.audience).trim();
+  const primaryProblem = normalizeBusinessField(input.primaryProblem).trim();
+  const solution = normalizeBusinessField(input.solution).trim();
+
+  if (!audience) return "";
+
+  const parts = [`I help ${audience}`];
+  if (primaryProblem) {
+    parts.push(`with ${primaryProblem}`);
+  }
+  if (solution) {
+    parts.push(`by ${solution}`);
+  }
+  return `${parts.join(" ")}.`;
+}
+
+function normalizeBusinessConfig(input: unknown): WizardBusinessConfig {
+  const record =
+    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const audience =
+    normalizeBusinessField(record.audience).trim() ||
+    normalizeBusinessField(record.whoIServe).trim();
+  const primaryProblem = normalizeBusinessField(record.primaryProblem).trim();
+  const solution = normalizeBusinessField(record.solution).trim();
+  const positioningStatement =
+    normalizeBusinessField(record.positioningStatement).trim() ||
+    buildPositioningStatement({
+      audience,
+      primaryProblem,
+      solution,
+    });
+
+  return {
+    positioningStatement,
+    audience,
+    primaryProblem,
+    solution,
+    targetMarket: normalizeBusinessField(record.targetMarket).trim(),
+    primaryOutcome: normalizeBusinessField(record.primaryOutcome).trim(),
+  };
+}
+
+const defaultProfile: WizardProfile = {
+  name: "",
+  handle: "",
+  location: "",
+  bio: "",
+  avatar: null,
+  banner: null,
+  avatarBlob: null,
+  bannerBlob: null,
+  avatarOriginalBlob: null,
+  bannerOriginalBlob: null,
+  links: {},
+  linkOrder: [],
+  buttons: [],
+  footer: {
+    mode: "default",
+    text: "",
+    linkText: "",
+    linkUrl: "",
+  },
+  newsletter: {
+    enabled: true,
+    title: "",
+    description: "",
+  },
+  booking: normalizeWizardBookingConfig({
+    enabled: true,
+    oneToOneEnabled: false,
+    classEnabled: false,
+    retreatEnabled: false,
+    offers: [],
+    classOffers: [],
+    retreatOffers: [],
+  }),
+  gift: {
+    enabled: false,
+    title: "",
+    description: "",
+    suggestedAmount: 10,
+    currency: "USD",
+    minimumAmount: 5,
+    icon: "Gift",
+  },
+  business: {
+    positioningStatement: "",
+    audience: "",
+    primaryProblem: "",
+    solution: "",
+    targetMarket: "",
+    primaryOutcome: "",
+  },
+};
+
+export const useWizardStore = defineStore("wizard", () => {
+  const sessionUserId = ref<string | null>(null);
+  const persistedOwnerUserId = ref<string | null>(null);
+
+  // Current step (1-indexed for display)
+  const currentStep = ref(1);
+  const furthestStep = ref(1);
+
+  // Profile data
+  const profile = ref<WizardProfile>({ ...defaultProfile });
+
+  // Pages (optional, for advanced users)
+  const pages = ref<WizardPage[]>([]);
+
+  // Blog posts (optional)
+  const posts = ref<WizardPost[]>([]);
+
+  // Products (optional)
+  const products = ref<WizardProduct[]>([]);
+
+  // Testimonials (optional)
+  const testimonials = ref<WizardTestimonial[]>([]);
+
+  // Optional step visibility
+  const newsletterEnabled = ref(true);
+  const blogEnabled = ref(false);
+  const bookingsEnabled = ref(true);
+  const shopEnabled = ref(false);
+  const testimonialsEnabled = ref(false);
+  const blogTitle = ref<string>(DEFAULT_BLOG_TITLE);
+  const shopTitle = ref<string>(DEFAULT_SHOP_TITLE);
+
+  // Testimonials placement (renderer hint)
+  const testimonialsPlacement = ref<TestimonialPlacement>("homepage");
+  const testimonialsTitle = ref<string>(DEFAULT_TESTIMONIALS_TITLE);
+  const sectionPaths = computed(() =>
+    resolveSiteSectionPaths({
+      pages: pages.value,
+      blogTitle: blogTitle.value,
+      shopTitle: shopTitle.value,
+      testimonialsTitle: testimonialsTitle.value,
+    }),
+  );
+  const blogPath = computed(() => sectionPaths.value.blog);
+  const shopPath = computed(() => sectionPaths.value.shop);
+  const testimonialsPath = computed(() => sectionPaths.value.testimonials);
+
+  // Username for publishing
+  const username = ref("");
+  const isUsernameAvailable = ref<boolean | null>(null);
+  const isCheckingUsername = ref(false);
+
+  // Selected vibe (theme)
+  const vibe = ref<VibeId>(defaultVibe);
+
+  // Theme customization
+  const accentOverride = ref<string | null>(null);
+
+  // Publishing state
+  const isPublishing = ref(false);
+  const publishError = ref<string | null>(null);
+  const lastPublishedAt = ref<string | null>(null);
+  const lastLocalEditAt = ref<string>(new Date().toISOString());
+  const lastSiteEditAt = ref<string>(new Date().toISOString());
+  const draftSourceUrl = ref<string | null>(null);
+
+  // Step names for display
+  const stepNames = computed(() => {
+    const steps = [
+      "Basics",
+      "Avatar",
+      "Banner",
+      "Links",
+      "Call-to-action",
+      "Pages",
+      "Additional Features",
+    ];
+
+    // Add conditional steps in order: Newsletter, Bookings, Blog, Offerings, Testimonials
+    if (newsletterEnabled.value) steps.push("Newsletter");
+    if (bookingsEnabled.value) steps.push("Bookings");
+    if (blogEnabled.value) steps.push("Blog");
+    steps.push("Offerings");
+    if (testimonialsEnabled.value) steps.push("Testimonials");
+
+    steps.push("Publish");
+    return steps;
+  });
+
+  const totalSteps = computed(() => stepNames.value.length);
+  const currentStepName = computed(
+    () => stepNames.value[currentStep.value - 1],
+  );
+
+  // Check if site needs publishing
+  const needsPublish = computed(() => {
+    // If never published, definitely needs publish
+    if (!lastPublishedAt.value) return true;
+
+    // If local edits are newer than last publish, needs republish
+    const lastEdit = new Date(lastSiteEditAt.value).getTime();
+    const lastPublish = new Date(lastPublishedAt.value).getTime();
+    return lastEdit > lastPublish;
+  });
+
+  // Can proceed to next step?
+  const canProceed = computed(() => {
+    if (currentStepName.value === "Basics") {
+      return (
+        profile.value.name.trim().length >= 2 &&
+        profile.value.handle.trim().length >= 3 &&
+        isUsernameAvailable.value === true
+      );
+    }
+
+    return true;
+  });
+
+  watch(
+    [
+      newsletterEnabled,
+      blogEnabled,
+      bookingsEnabled,
+      shopEnabled,
+      testimonialsEnabled,
+    ],
+    () => {
+      profile.value.newsletter = {
+        ...profile.value.newsletter,
+        enabled: newsletterEnabled.value,
+      };
+      if (currentStep.value > totalSteps.value) {
+        currentStep.value = totalSteps.value;
+      }
+      if (furthestStep.value > totalSteps.value) {
+        furthestStep.value = totalSteps.value;
+      }
+      if (furthestStep.value < currentStep.value) {
+        furthestStep.value = currentStep.value;
+      }
+      saveToStorage();
+    },
+    { flush: "sync" },
+  );
+
+  watch(
+    products,
+    () => {
+      saveToStorage();
+    },
+    { deep: true },
+  );
+
+  watch(
+    testimonials,
+    () => {
+      saveToStorage();
+    },
+    { deep: true },
+  );
+
+  watch(
+    [pages, blogEnabled, shopEnabled],
+    () => {
+      const normalizedPlacement = normalizeTestimonialPlacement(
+        testimonialsPlacement.value,
+        {
+          blogEnabled: blogEnabled.value,
+          shopEnabled: shopEnabled.value,
+          pages: pages.value,
+        },
+      );
+
+      if (normalizedPlacement !== testimonialsPlacement.value) {
+        testimonialsPlacement.value = normalizedPlacement;
+      }
+    },
+    { deep: true },
+  );
+
+  watch(testimonialsPlacement, () => {
+    markAsEdited();
+    saveToStorage();
+  });
+
+  watch(testimonialsTitle, () => {
+    markAsEdited();
+    saveToStorage();
+  });
+
+  watch(blogTitle, () => {
+    markAsEdited();
+    saveToStorage();
+  });
+
+  watch(shopTitle, () => {
+    markAsEdited();
+    saveToStorage();
+  });
+
+  // Navigation
+  function nextStep() {
+    if (currentStep.value < totalSteps.value && canProceed.value) {
+      currentStep.value++;
+      if (furthestStep.value < currentStep.value) {
+        furthestStep.value = currentStep.value;
+      }
+      saveToStorage();
+    }
+  }
+
+  function prevStep() {
+    if (currentStep.value > 1) {
+      currentStep.value--;
+      saveToStorage();
+    }
+  }
+
+  function goToStep(step: number) {
+    if (step >= 1 && step <= totalSteps.value) {
+      currentStep.value = step;
+      if (furthestStep.value < currentStep.value) {
+        furthestStep.value = currentStep.value;
+      }
+      saveToStorage();
+    }
+  }
+
+  // Update profile
+  function updateProfile(updates: Partial<WizardProfile>) {
+    profile.value = { ...profile.value, ...updates };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setFooter(updates: Partial<WizardFooterConfig>) {
+    profile.value = {
+      ...profile.value,
+      footer: { ...profile.value.footer, ...updates },
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setNewsletter(updates: Partial<WizardNewsletterConfig>) {
+    profile.value = {
+      ...profile.value,
+      newsletter: { ...profile.value.newsletter, ...updates },
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setBooking(
+    updates: Partial<WizardBookingConfig> & {
+      title?: string;
+      description?: string;
+      duration?: WizardBookingDuration;
+      pricing?: WizardBookingPricing;
+    },
+  ) {
+    const nextOffers =
+      updates.offers !== undefined
+        ? normalizeWizardBookingOffers(updates.offers)
+        : [...profile.value.booking.offers];
+    const nextClassOffers =
+      updates.classOffers !== undefined
+        ? normalizeWizardClassOffers(updates.classOffers)
+        : [...profile.value.booking.classOffers];
+    const nextRetreatOffers =
+      updates.retreatOffers !== undefined
+        ? normalizeWizardRetreatOffers(updates.retreatOffers)
+        : [...profile.value.booking.retreatOffers];
+
+    if (nextOffers.length === 0) {
+      nextOffers.push(createDefaultBookingOffer());
+    }
+    if (nextClassOffers.length === 0) {
+      nextClassOffers.push(createDefaultClassOffer());
+    }
+    if (nextRetreatOffers.length === 0) {
+      nextRetreatOffers.push(createDefaultRetreatOffer());
+    }
+
+    if (updates.title !== undefined && nextOffers.length === 1) {
+      const nextId =
+        generateSlug(updates.title) || nextOffers[0].id || "book-session";
+      nextOffers[0] = { ...nextOffers[0], id: nextId, title: updates.title };
+    }
+    // Do not mirror booking.description into offers[0].description — short intro and
+    // per-offer descriptions (e.g. rich HTML) are edited separately.
+    if (updates.duration !== undefined) {
+      nextOffers[0] = { ...nextOffers[0], duration: updates.duration };
+    }
+    if (updates.pricing !== undefined) {
+      nextOffers[0] = { ...nextOffers[0], pricing: updates.pricing };
+    }
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        ...updates,
+        offers: nextOffers,
+        classOffers: nextClassOffers,
+        retreatOffers: nextRetreatOffers,
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function enableBookingType(type: WizardBookingType) {
+    if (type === "one_to_one") {
+      setBooking({ oneToOneEnabled: true });
+      return;
+    }
+
+    if (type === "class") {
+      setBooking({ classEnabled: true });
+      return;
+    }
+
+    if (type === "retreat") {
+      setBooking({ retreatEnabled: true });
+    }
+  }
+
+  function disableBookingType(type: WizardBookingType) {
+    if (type === "one_to_one") {
+      setBooking({ oneToOneEnabled: false });
+      return;
+    }
+
+    if (type === "class") {
+      setBooking({ classEnabled: false });
+      return;
+    }
+
+    if (type === "retreat") {
+      setBooking({ retreatEnabled: false });
+    }
+  }
+
+  function addBookingOffer() {
+    const baseId = "book-session";
+    const existingIds = new Set(profile.value.booking.offers.map((offer) => offer.id));
+    let nextId = baseId;
+    let counter = 2;
+    while (existingIds.has(nextId)) {
+      nextId = `${baseId}-${counter++}`;
+    }
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        offers: [
+          ...profile.value.booking.offers,
+          createDefaultBookingOffer({ id: nextId }),
+        ],
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+    return nextId;
+  }
+
+  function updateBookingOffer(
+    offerId: string,
+    updates: Partial<WizardBookingOffer>,
+  ) {
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        offers: profile.value.booking.offers.map((offer) => {
+          if (offer.id !== offerId) return offer;
+
+          const nextTitle =
+            typeof updates.title === "string" ? updates.title : offer.title;
+          const nextId =
+            typeof updates.id === "string" && updates.id.trim().length > 0
+              ? updates.id.trim()
+              : offer.id;
+          // `pricing: undefined` must clear pricing (e.g. free offer). Plain
+          // `updates.pricing === undefined` is also true when `pricing` is omitted,
+          // so use `in` to tell "clear" vs "leave unchanged".
+          const nextPricing = !("pricing" in updates)
+            ? offer.pricing
+            : updates.pricing
+              ? {
+                  ...defaultWizardBookingPricing(),
+                  ...offer.pricing,
+                  ...updates.pricing,
+                }
+              : undefined;
+
+          return {
+            ...offer,
+            ...updates,
+            id: nextId,
+            title: nextTitle,
+            pricing: nextPricing,
+          };
+        }),
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removeBookingOffer(offerId: string) {
+    const remainingOffers = profile.value.booking.offers.filter(
+      (offer) => offer.id !== offerId,
+    );
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        offers:
+          remainingOffers.length > 0
+            ? remainingOffers
+            : [createDefaultBookingOffer()],
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setBookingAvailability(
+    day: keyof WizardBookingConfig["availability"],
+    windows: string[],
+  ) {
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        availability: {
+          ...profile.value.booking.availability,
+          [day]: windows,
+        },
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setBookingOfferPricing(
+    offerId: string,
+    updates: Partial<WizardBookingPricing> | null,
+  ) {
+    updateBookingOffer(offerId, {
+      pricing:
+        updates === null
+          ? undefined
+          : {
+              ...defaultWizardBookingPricing(),
+              ...profile.value.booking.offers.find((offer) => offer.id === offerId)
+                ?.pricing,
+              ...updates,
+            },
+    });
+  }
+
+  function addClassOffer() {
+    const baseId = "weekly-class";
+    const existingIds = new Set(
+      profile.value.booking.classOffers.map((offer) => offer.id),
+    );
+    let nextId = baseId;
+    let counter = 2;
+    while (existingIds.has(nextId)) {
+      nextId = `${baseId}-${counter++}`;
+    }
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        classOffers: [
+          ...profile.value.booking.classOffers,
+          createDefaultClassOffer({ id: nextId }),
+        ],
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+    return nextId;
+  }
+
+  function addRetreatOffer() {
+    const baseId = "retreat";
+    const existingIds = new Set(
+      profile.value.booking.retreatOffers.map((offer) => offer.id),
+    );
+    let nextId = baseId;
+    let counter = 2;
+    while (existingIds.has(nextId)) {
+      nextId = `${baseId}-${counter++}`;
+    }
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        retreatOffers: [
+          ...profile.value.booking.retreatOffers,
+          createDefaultRetreatOffer({ id: nextId }),
+        ],
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+    return nextId;
+  }
+
+  function updateClassOffer(
+    offerId: string,
+    updates: Partial<WizardClassOffer>,
+  ) {
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        classOffers: profile.value.booking.classOffers.map((offer) => {
+          if (offer.id !== offerId) return offer;
+
+          const nextPricing = !("pricing" in updates)
+            ? offer.pricing
+            : updates.pricing
+              ? {
+                  ...defaultWizardBookingPricing(),
+                  ...offer.pricing,
+                  ...updates.pricing,
+                }
+              : undefined;
+
+          return {
+            ...offer,
+            ...updates,
+            id:
+              typeof updates.id === "string" && updates.id.trim().length > 0
+                ? updates.id.trim()
+                : offer.id,
+            title:
+              typeof updates.title === "string" ? updates.title : offer.title,
+            recurrence: {
+              ...offer.recurrence,
+              ...(updates.recurrence || {}),
+            },
+            pricing: nextPricing,
+            capacity:
+              typeof updates.capacity === "number"
+                ? Math.max(1, Math.round(updates.capacity))
+                : updates.capacity === null
+                  ? null
+                  : offer.capacity,
+          };
+        }),
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removeClassOffer(offerId: string) {
+    const remainingOffers = profile.value.booking.classOffers.filter(
+      (offer) => offer.id !== offerId,
+    );
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        classOffers:
+          remainingOffers.length > 0
+            ? remainingOffers
+            : [createDefaultClassOffer()],
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function updateRetreatOffer(
+    offerId: string,
+    updates: Partial<WizardRetreatOffer>,
+  ) {
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        retreatOffers: profile.value.booking.retreatOffers.map((offer) => {
+          if (offer.id !== offerId) return offer;
+
+          const nextPricing = !("pricing" in updates)
+            ? offer.pricing
+            : updates.pricing
+              ? {
+                  ...defaultWizardBookingPricing(),
+                  ...offer.pricing,
+                  ...updates.pricing,
+                }
+              : undefined;
+
+          return {
+            ...offer,
+            ...updates,
+            id:
+              typeof updates.id === "string" && updates.id.trim().length > 0
+                ? updates.id.trim()
+                : offer.id,
+            title:
+              typeof updates.title === "string" ? updates.title : offer.title,
+            pricing: nextPricing,
+            capacity:
+              typeof updates.capacity === "number"
+                ? Math.max(1, Math.round(updates.capacity))
+                : updates.capacity === null
+                  ? null
+                  : offer.capacity,
+            durationDays: deriveRetreatDurationDays({
+              startDate:
+                typeof updates.startDate === "string"
+                  ? updates.startDate
+                  : offer.startDate,
+              startTime:
+                typeof updates.startTime === "string"
+                  ? updates.startTime
+                  : offer.startTime,
+              endDate:
+                typeof updates.endDate === "string"
+                  ? updates.endDate
+                  : offer.endDate,
+              endTime:
+                typeof updates.endTime === "string"
+                  ? updates.endTime
+                  : offer.endTime,
+              durationDays:
+                typeof updates.durationDays === "number"
+                  ? updates.durationDays
+                  : offer.durationDays,
+            }),
+          };
+        }),
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removeRetreatOffer(offerId: string) {
+    const remainingOffers = profile.value.booking.retreatOffers.filter(
+      (offer) => offer.id !== offerId,
+    );
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        retreatOffers:
+          remainingOffers.length > 0
+            ? remainingOffers
+            : [createDefaultRetreatOffer()],
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setClassOfferPricing(
+    offerId: string,
+    updates: Partial<WizardBookingPricing> | null,
+  ) {
+    updateClassOffer(offerId, {
+      pricing:
+        updates === null
+          ? undefined
+          : {
+              ...defaultWizardBookingPricing(),
+              ...profile.value.booking.classOffers.find((offer) => offer.id === offerId)
+                ?.pricing,
+              ...updates,
+            },
+    });
+  }
+
+  function setRetreatOfferPricing(
+    offerId: string,
+    updates: Partial<WizardBookingPricing> | null,
+  ) {
+    updateRetreatOffer(offerId, {
+      pricing:
+        updates === null
+          ? undefined
+          : {
+              ...defaultWizardBookingPricing(),
+              ...profile.value.booking.retreatOffers.find((offer) => offer.id === offerId)
+                ?.pricing,
+              ...updates,
+            },
+    });
+  }
+
+  function setBookingPricing(updates: Partial<WizardBookingPricing>) {
+    const primaryOfferId = profile.value.booking.offers[0]?.id;
+    if (!primaryOfferId) return;
+    setBookingOfferPricing(primaryOfferId, updates);
+  }
+
+  function setPaidBookingOffersPricing(updates: Partial<WizardBookingPricing>) {
+    const paidOfferIds = profile.value.booking.offers
+      .filter((offer) => offer.pricing?.enabled)
+      .map((offer) => offer.id);
+    const paidClassOfferIds = profile.value.booking.classOffers
+      .filter((offer) => offer.pricing?.enabled)
+      .map((offer) => offer.id);
+    const paidRetreatOfferIds = profile.value.booking.retreatOffers
+      .filter((offer) => offer.pricing?.enabled)
+      .map((offer) => offer.id);
+
+    if (
+      paidOfferIds.length === 0 &&
+      paidClassOfferIds.length === 0 &&
+      paidRetreatOfferIds.length === 0
+    ) {
+      return;
+    }
+
+    const nextOffers = profile.value.booking.offers.map((offer) => {
+      if (!paidOfferIds.includes(offer.id) || !offer.pricing) {
+        return offer;
+      }
+
+      return {
+        ...offer,
+        pricing: {
+          ...defaultWizardBookingPricing(),
+          ...offer.pricing,
+          ...updates,
+        },
+      };
+    });
+    const nextClassOffers = profile.value.booking.classOffers.map((offer) => {
+      if (!paidClassOfferIds.includes(offer.id) || !offer.pricing) {
+        return offer;
+      }
+
+      return {
+        ...offer,
+        pricing: {
+          ...defaultWizardBookingPricing(),
+          ...offer.pricing,
+          ...updates,
+        },
+      };
+    });
+    const nextRetreatOffers = profile.value.booking.retreatOffers.map((offer) => {
+      if (!paidRetreatOfferIds.includes(offer.id) || !offer.pricing) {
+        return offer;
+      }
+
+      return {
+        ...offer,
+        pricing: {
+          ...defaultWizardBookingPricing(),
+          ...offer.pricing,
+          ...updates,
+        },
+      };
+    });
+
+    profile.value = {
+      ...profile.value,
+      booking: syncBookingLegacyFields({
+        ...profile.value.booking,
+        offers: nextOffers,
+        classOffers: nextClassOffers,
+        retreatOffers: nextRetreatOffers,
+      }),
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setGift(updates: Partial<WizardGiftConfig>) {
+    profile.value = {
+      ...profile.value,
+      gift: { ...profile.value.gift, ...updates },
+    };
+    markAsEdited();
+    saveToStorage();
+  }
+
+  // Links helpers
+  function setLink(platform: string, value: string) {
+    profile.value.links = { ...profile.value.links, [platform]: value };
+    // Add to linkOrder if not already present (but not _label keys)
+    if (
+      !platform.endsWith("_label") &&
+      !profile.value.linkOrder.includes(platform)
+    ) {
+      profile.value.linkOrder = [...profile.value.linkOrder, platform];
+    }
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removeLink(platform: string) {
+    const { [platform]: _, ...rest } = profile.value.links;
+    profile.value.links = rest;
+    // Remove from linkOrder
+    profile.value.linkOrder = profile.value.linkOrder.filter(
+      (k) => k !== platform,
+    );
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setLinkOrder(order: string[]) {
+    profile.value.linkOrder = order;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  // Buttons helpers
+  function addButton(button: Me3Button) {
+    profile.value.buttons = [...profile.value.buttons, button];
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function updateButton(index: number, button: Me3Button) {
+    const buttons = [...profile.value.buttons];
+    buttons[index] = button;
+    profile.value.buttons = buttons;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removeButton(index: number) {
+    profile.value.buttons = profile.value.buttons.filter((_, i) => i !== index);
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function setButtons(buttons: Me3Button[]) {
+    profile.value.buttons = [...buttons];
+    markAsEdited();
+    saveToStorage();
+  }
+
+  // Pages helpers
+  const MAX_PAGES = 50;
+
+  function addPage(title: string = "New Page", options?: { visible?: boolean }) {
+    if (pages.value.length >= MAX_PAGES) return null;
+
+    const baseSlug = generateSlug(title) || "page";
+    const slug = ensureUniqueSlug(
+      baseSlug,
+      (candidate) => pages.value.some((p) => p.slug === candidate),
+    );
+
+    const newPage: WizardPage = {
+      title,
+      slug,
+      slugCustomized: false,
+      content: "",
+      images: [],
+      visible: options?.visible ?? true,
+    };
+
+    pages.value = [...pages.value, newPage];
+    markAsEdited();
+    saveToStorage();
+    return newPage;
+  }
+
+  function updatePage(index: number, updates: Partial<WizardPage>) {
+    if (index < 0 || index >= pages.value.length) return;
+
+    const updatedPages = [...pages.value];
+    const current = updatedPages[index];
+    const previousSlug = current.slug;
+    const nextTitle =
+      typeof updates.title === "string" ? updates.title : current.title;
+    const autoSlugBase = generateSlug(nextTitle) || "page";
+    const hasExplicitSlug = Object.prototype.hasOwnProperty.call(updates, "slug");
+
+    let nextSlug = current.slug;
+    let nextSlugCustomized = Boolean(current.slugCustomized);
+
+    if (hasExplicitSlug) {
+      const requestedSlug = generateSlug(updates.slug || "") || autoSlugBase;
+      nextSlug = ensureUniqueSlug(
+        requestedSlug,
+        (candidate) =>
+          pages.value.some(
+            (page, pageIndex) =>
+              pageIndex !== index && page.slug === candidate,
+          ),
+      );
+      nextSlugCustomized = nextSlug !== autoSlugBase;
+    } else if (updates.title && !current.slugCustomized) {
+      nextSlug = ensureUniqueSlug(
+        autoSlugBase,
+        (candidate) =>
+          pages.value.some(
+            (page, pageIndex) =>
+              pageIndex !== index && page.slug === candidate,
+          ),
+      );
+      nextSlugCustomized = false;
+    }
+
+    const nextPage = {
+      ...current,
+      ...updates,
+      slug: nextSlug,
+      slugCustomized: nextSlugCustomized,
+    };
+    updatedPages[index] = nextPage;
+    pages.value = updatedPages;
+    if (
+      nextPage.slug !== previousSlug &&
+      testimonialsPlacement.value === `page:${previousSlug}`
+    ) {
+      testimonialsPlacement.value = `page:${nextPage.slug}`;
+    }
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function movePage(fromIndex: number, toIndex: number) {
+    if (
+      fromIndex < 0 ||
+      fromIndex >= pages.value.length ||
+      toIndex < 0 ||
+      toIndex >= pages.value.length ||
+      fromIndex === toIndex
+    ) {
+      return;
+    }
+
+    const updatedPages = [...pages.value];
+    const [movedPage] = updatedPages.splice(fromIndex, 1);
+    if (!movedPage) return;
+
+    updatedPages.splice(toIndex, 0, movedPage);
+    pages.value = updatedPages;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function addPageImage(
+    pageIndex: number,
+    image: {
+      id: string;
+      blob: Blob;
+      mimeType: string;
+      ext: string;
+      alt?: string;
+    },
+  ): WizardPageImage | null {
+    if (pageIndex < 0 || pageIndex >= pages.value.length) return null;
+
+    const page = pages.value[pageIndex];
+    if (!page.images) page.images = [];
+
+    if (page.images.some((img) => img.id === image.id)) return null;
+
+    const tempUrl = URL.createObjectURL(image.blob);
+    const pageImage: WizardPageImage = {
+      id: image.id,
+      blob: image.blob,
+      tempUrl,
+      mimeType: image.mimeType,
+      ext: image.ext,
+      alt: image.alt,
+    };
+
+    const updatedPages = [...pages.value];
+    updatedPages[pageIndex] = { ...page, images: [...page.images, pageImage] };
+    pages.value = updatedPages;
+    markAsEdited();
+    saveToStorage();
+
+    return pageImage;
+  }
+
+  function removePageImage(pageIndex: number, imageId: string): void {
+    if (pageIndex < 0 || pageIndex >= pages.value.length) return;
+
+    const page = pages.value[pageIndex];
+    if (!page.images || page.images.length === 0) return;
+
+    const img = page.images.find((i) => i.id === imageId);
+    if (img?.tempUrl) {
+      try {
+        URL.revokeObjectURL(img.tempUrl);
+      } catch {
+        // ignore
+      }
+    }
+
+    const updatedPages = [...pages.value];
+    updatedPages[pageIndex] = {
+      ...page,
+      images: page.images.filter((i) => i.id !== imageId),
+    };
+    pages.value = updatedPages;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  /**
+   * Keep `page.images` aligned to what's actually referenced in the editor content.
+   * Any unreferenced images are removed and their blob URLs revoked.
+   */
+  function syncPageImages(
+    pageIndex: number,
+    activeImageIds: Set<string>,
+  ): void {
+    if (pageIndex < 0 || pageIndex >= pages.value.length) return;
+
+    const page = pages.value[pageIndex];
+    const images = page.images || [];
+    if (images.length === 0) return;
+
+    const removed = images.filter((img) => !activeImageIds.has(img.id));
+    for (const img of removed) {
+      if (img.tempUrl) {
+        try {
+          URL.revokeObjectURL(img.tempUrl);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const kept = images.filter((img) => activeImageIds.has(img.id));
+    if (kept.length === images.length) return;
+
+    const updatedPages = [...pages.value];
+    updatedPages[pageIndex] = { ...page, images: kept };
+    pages.value = updatedPages;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removePage(index: number) {
+    if (index < 0 || index >= pages.value.length) return;
+    const page = pages.value[index];
+    if (page?.images?.length) {
+      for (const img of page.images) {
+        if (img.tempUrl) {
+          try {
+            URL.revokeObjectURL(img.tempUrl);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    pages.value = pages.value.filter((_, i) => i !== index);
+    if (page && testimonialsPlacement.value === `page:${page.slug}`) {
+      testimonialsPlacement.value = "homepage";
+    }
+    markAsEdited();
+    saveToStorage();
+  }
+
+  // Blog helpers
+  const MAX_POSTS = 50;
+  function markAsEdited(options: { siteAffecting?: boolean } = {}) {
+    const now = new Date().toISOString();
+    lastLocalEditAt.value = now;
+    if (options.siteAffecting !== false) {
+      lastSiteEditAt.value = now;
+    }
+  }
+
+  function addPost(
+    title: string = "New Post",
+    type: WizardPostType = "article",
+    options: { siteAffecting?: boolean } = {},
+  ) {
+    if (posts.value.length >= MAX_POSTS) return null;
+
+    const normalizedTitle =
+      title.trim() ||
+      (type === "video" ? "New Video" : "New Post");
+    const baseSlug = generateSlug(normalizedTitle) || "post";
+    const slug = ensureUniqueSlug(
+      baseSlug,
+      (candidate) => posts.value.some((p) => p.slug === candidate),
+    );
+
+    const newPost: WizardPost = {
+      title: normalizedTitle,
+      slug,
+      slugCustomized: false,
+      content: "",
+      images: [],
+      type,
+      caption: "",
+      mediaFile: null,
+      draft: true,
+    };
+
+    posts.value = [...posts.value, newPost];
+    markAsEdited(options);
+    saveToStorage();
+    return newPost;
+  }
+
+  function updatePost(
+    index: number,
+    updates: Partial<WizardPost>,
+    options: { siteAffecting?: boolean } = {},
+  ) {
+    if (index < 0 || index >= posts.value.length) return;
+
+    const updatedPosts = [...posts.value];
+    const current = updatedPosts[index];
+    const nextTitle =
+      typeof updates.title === "string" ? updates.title : current.title;
+    const autoSlugBase = generateSlug(nextTitle) || "post";
+    const hasExplicitSlug = Object.prototype.hasOwnProperty.call(updates, "slug");
+
+    let nextSlug = current.slug;
+    let nextSlugCustomized = Boolean(current.slugCustomized);
+
+    if (hasExplicitSlug) {
+      const requestedSlug = generateSlug(updates.slug || "") || autoSlugBase;
+      nextSlug = ensureUniqueSlug(
+        requestedSlug,
+        (candidate) =>
+          posts.value.some(
+            (post, postIndex) =>
+              postIndex !== index && post.slug === candidate,
+          ),
+      );
+      nextSlugCustomized = nextSlug !== autoSlugBase;
+    } else if (updates.title && !current.slugCustomized) {
+      nextSlug = ensureUniqueSlug(
+        autoSlugBase,
+        (candidate) =>
+          posts.value.some(
+            (post, postIndex) =>
+              postIndex !== index && post.slug === candidate,
+          ),
+      );
+      nextSlugCustomized = false;
+    }
+
+    updatedPosts[index] = {
+      ...current,
+      ...updates,
+      slug: nextSlug,
+      slugCustomized: nextSlugCustomized,
+    };
+    posts.value = updatedPosts;
+    markAsEdited(options);
+    saveToStorage();
+  }
+
+  function addPostImage(
+    postIndex: number,
+    image: {
+      id: string;
+      blob: Blob;
+      mimeType: string;
+      ext: string;
+      alt?: string;
+    },
+    options: { siteAffecting?: boolean } = {},
+  ): WizardPostImage | null {
+    if (postIndex < 0 || postIndex >= posts.value.length) return null;
+
+    const post = posts.value[postIndex];
+    if (!post.images) post.images = [];
+
+    if (post.images.some((img) => img.id === image.id)) return null;
+
+    const tempUrl = URL.createObjectURL(image.blob);
+    const postImage: WizardPostImage = {
+      id: image.id,
+      blob: image.blob,
+      tempUrl,
+      mimeType: image.mimeType,
+      ext: image.ext,
+      alt: image.alt,
+    };
+
+    const updatedPosts = [...posts.value];
+    updatedPosts[postIndex] = { ...post, images: [...post.images, postImage] };
+    posts.value = updatedPosts;
+    markAsEdited(options);
+    saveToStorage();
+
+    return postImage;
+  }
+
+  function removePostImage(
+    postIndex: number,
+    imageId: string,
+    options: { siteAffecting?: boolean } = {},
+  ): void {
+    if (postIndex < 0 || postIndex >= posts.value.length) return;
+
+    const post = posts.value[postIndex];
+    if (!post.images || post.images.length === 0) return;
+
+    const img = post.images.find((i) => i.id === imageId);
+    if (img?.tempUrl) {
+      try {
+        URL.revokeObjectURL(img.tempUrl);
+      } catch {
+        // ignore
+      }
+    }
+
+    const updatedPosts = [...posts.value];
+    updatedPosts[postIndex] = {
+      ...post,
+      images: post.images.filter((i) => i.id !== imageId),
+    };
+    posts.value = updatedPosts;
+    markAsEdited(options);
+    saveToStorage();
+  }
+
+  /**
+   * Keep `post.images` aligned to what's actually referenced in the editor content.
+   * Any unreferenced images are removed and their blob URLs revoked.
+   */
+  function syncPostImages(
+    postIndex: number,
+    activeImageIds: Set<string>,
+    options: { siteAffecting?: boolean } = {},
+  ): void {
+    if (postIndex < 0 || postIndex >= posts.value.length) return;
+
+    const post = posts.value[postIndex];
+    const images = post.images || [];
+    if (images.length === 0) return;
+
+    const removed = images.filter((img) => !activeImageIds.has(img.id));
+    for (const img of removed) {
+      if (img.tempUrl) {
+        try {
+          URL.revokeObjectURL(img.tempUrl);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const kept = images.filter((img) => activeImageIds.has(img.id));
+    if (kept.length === images.length) return;
+
+    const updatedPosts = [...posts.value];
+    updatedPosts[postIndex] = { ...post, images: kept };
+    posts.value = updatedPosts;
+    markAsEdited(options);
+    saveToStorage();
+  }
+
+  function reorderPostImages(
+    postIndex: number,
+    fromIndex: number,
+    toIndex: number,
+    options: { siteAffecting?: boolean } = {},
+  ): void {
+    if (postIndex < 0 || postIndex >= posts.value.length) return;
+
+    const post = posts.value[postIndex];
+    const images = [...(post.images || [])];
+    if (
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= images.length ||
+      toIndex >= images.length ||
+      fromIndex === toIndex
+    ) {
+      return;
+    }
+
+    const [movedImage] = images.splice(fromIndex, 1);
+    images.splice(toIndex, 0, movedImage);
+
+    const updatedPosts = [...posts.value];
+    updatedPosts[postIndex] = { ...post, images };
+    posts.value = updatedPosts;
+    markAsEdited(options);
+    saveToStorage();
+  }
+
+  function removePost(
+    index: number,
+    options: { siteAffecting?: boolean } = {},
+  ) {
+    if (index < 0 || index >= posts.value.length) return;
+    const post = posts.value[index];
+    if (post?.images?.length) {
+      for (const img of post.images) {
+        if (img.tempUrl) {
+          try {
+            URL.revokeObjectURL(img.tempUrl);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    posts.value = posts.value.filter((_, i) => i !== index);
+    markAsEdited(options);
+    saveToStorage();
+  }
+
+  // Product helpers
+  const MAX_PRODUCTS = 20;
+  function addProduct(title: string = "New Product") {
+    if (products.value.length >= MAX_PRODUCTS) return null;
+
+    const baseSlug = generateSlug(title) || "product";
+    const slug = ensureUniqueSlug(
+      baseSlug,
+      (candidate) => products.value.some((p) => p.slug === candidate),
+    );
+
+    const newProduct: WizardProduct = {
+      title,
+      slug,
+      slugCustomized: false,
+      content: "",
+      images: [],
+      price: 2500,
+      currency: "USD",
+      available: true,
+    };
+
+    products.value = [...products.value, newProduct];
+    markAsEdited();
+    saveToStorage();
+    return newProduct;
+  }
+
+  function updateProduct(index: number, updates: Partial<WizardProduct>) {
+    if (index < 0 || index >= products.value.length) return;
+
+    const updatedProducts = [...products.value];
+    const current = updatedProducts[index];
+    const nextTitle =
+      typeof updates.title === "string" ? updates.title : current.title;
+    const autoSlugBase = generateSlug(nextTitle) || "product";
+    const hasExplicitSlug = Object.prototype.hasOwnProperty.call(updates, "slug");
+
+    let nextSlug = current.slug;
+    let nextSlugCustomized = Boolean(current.slugCustomized);
+
+    if (hasExplicitSlug) {
+      const requestedSlug = generateSlug(updates.slug || "") || autoSlugBase;
+      nextSlug = ensureUniqueSlug(
+        requestedSlug,
+        (candidate) =>
+          products.value.some(
+            (product, productIndex) =>
+              productIndex !== index && product.slug === candidate,
+          ),
+      );
+      nextSlugCustomized = nextSlug !== autoSlugBase;
+    } else if (updates.title && !current.slugCustomized) {
+      nextSlug = ensureUniqueSlug(
+        autoSlugBase,
+        (candidate) =>
+          products.value.some(
+            (product, productIndex) =>
+              productIndex !== index && product.slug === candidate,
+          ),
+      );
+      nextSlugCustomized = false;
+    }
+
+    updatedProducts[index] = {
+      ...current,
+      ...updates,
+      slug: nextSlug,
+      slugCustomized: nextSlugCustomized,
+    };
+    products.value = updatedProducts;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function addProductImage(
+    productIndex: number,
+    image: {
+      id: string;
+      blob: Blob;
+      mimeType: string;
+      ext: string;
+      alt?: string;
+    },
+  ): WizardProductImage | null {
+    if (productIndex < 0 || productIndex >= products.value.length) return null;
+
+    const product = products.value[productIndex];
+    if (!product.images) product.images = [];
+
+    if (product.images.some((img) => img.id === image.id)) return null;
+
+    const tempUrl = URL.createObjectURL(image.blob);
+    const productImage: WizardProductImage = {
+      id: image.id,
+      blob: image.blob,
+      tempUrl,
+      mimeType: image.mimeType,
+      ext: image.ext,
+      alt: image.alt,
+    };
+
+    const updatedProducts = [...products.value];
+    updatedProducts[productIndex] = {
+      ...product,
+      images: [...product.images, productImage],
+    };
+    products.value = updatedProducts;
+    markAsEdited();
+    saveToStorage();
+
+    return productImage;
+  }
+
+  function removeProductImage(productIndex: number, imageId: string): void {
+    if (productIndex < 0 || productIndex >= products.value.length) return;
+
+    const product = products.value[productIndex];
+    if (!product.images || product.images.length === 0) return;
+
+    const img = product.images.find((i) => i.id === imageId);
+    if (img?.tempUrl) {
+      try {
+        URL.revokeObjectURL(img.tempUrl);
+      } catch {
+        // ignore
+      }
+    }
+
+    const updatedProducts = [...products.value];
+    updatedProducts[productIndex] = {
+      ...product,
+      images: product.images.filter((i) => i.id !== imageId),
+    };
+    products.value = updatedProducts;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function syncProductImages(
+    productIndex: number,
+    activeImageIds: Set<string>,
+  ): void {
+    if (productIndex < 0 || productIndex >= products.value.length) return;
+
+    const product = products.value[productIndex];
+    const images = product.images || [];
+    if (images.length === 0) return;
+
+    const removed = images.filter((img) => !activeImageIds.has(img.id));
+    for (const img of removed) {
+      if (img.tempUrl) {
+        try {
+          URL.revokeObjectURL(img.tempUrl);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const kept = images.filter((img) => activeImageIds.has(img.id));
+    if (kept.length === images.length) return;
+
+    const updatedProducts = [...products.value];
+    updatedProducts[productIndex] = { ...product, images: kept };
+    products.value = updatedProducts;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removeProduct(index: number) {
+    if (index < 0 || index >= products.value.length) return;
+    const product = products.value[index];
+    if (product?.images?.length) {
+      for (const img of product.images) {
+        if (img.tempUrl) {
+          try {
+            URL.revokeObjectURL(img.tempUrl);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    products.value = products.value.filter((_, i) => i !== index);
+    markAsEdited();
+    saveToStorage();
+  }
+
+  // Testimonials helpers
+  const MAX_TESTIMONIALS = 6;
+
+  function addTestimonial(testimonial: WizardTestimonial) {
+    if (testimonials.value.length >= MAX_TESTIMONIALS) return null;
+    testimonials.value = [...testimonials.value, testimonial];
+    markAsEdited();
+    saveToStorage();
+    return testimonial;
+  }
+
+  function revokeTestimonialObjectUrl(url: string | undefined) {
+    if (url?.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  function updateTestimonial(
+    index: number,
+    updates: Partial<WizardTestimonial>,
+  ) {
+    if (index < 0 || index >= testimonials.value.length) return;
+    const updatedTestimonials = [...testimonials.value];
+    const current = updatedTestimonials[index];
+    const next = { ...current, ...updates };
+    const prevAvatar = current.avatar;
+    if (prevAvatar && prevAvatar !== next.avatar) {
+      revokeTestimonialObjectUrl(prevAvatar);
+    }
+    updatedTestimonials[index] = next;
+    testimonials.value = updatedTestimonials;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function removeTestimonial(index: number) {
+    if (index < 0 || index >= testimonials.value.length) return;
+    const removed = testimonials.value[index];
+    revokeTestimonialObjectUrl(removed?.avatar);
+    testimonials.value = testimonials.value.filter((_, i) => i !== index);
+    markAsEdited();
+    saveToStorage();
+  }
+
+  function blobImageExt(blob: Blob): string {
+    if (blob.type === "image/png") return "png";
+    if (blob.type === "image/webp") return "webp";
+    if (blob.type === "image/gif") return "gif";
+    return "jpg";
+  }
+
+  /** Convert our hosted /files/… URLs to ./files/… for me.json. */
+  function fileReferenceToRelativePath(url: string | null): string | null {
+    if (!url) return null;
+    const trimmed = url.trim();
+    if (trimmed.startsWith("./")) return trimmed;
+    if (trimmed.startsWith("/")) return `.${trimmed}`;
+    const m = trimmed.match(
+      /\/files\/(avatar|banner|testimonial-\d+)\.([a-z0-9]+)$/i,
+    );
+    if (m) {
+      return `./files/${m[1]}.${m[2]}`;
+    }
+    return null;
+  }
+
+  function publishableTestimonials(): WizardTestimonial[] {
+    return testimonials.value.filter(
+      (t) => t.name.trim().length > 0 && t.quote.trim().length > 0,
+    );
+  }
+
+  // Generate me.json content
+  function generateMe3Json(): ExtendedMe3Profile {
+    const me3: ExtendedMe3Profile = {
+      version: "0.1",
+      name: profile.value.name.trim(),
+    };
+
+    if (profile.value.handle) {
+      me3.handle = profile.value.handle.trim();
+    }
+
+    if (profile.value.location && profile.value.location.trim()) {
+      me3.location = profile.value.location.trim();
+    }
+
+    if (profile.value.bio) {
+      me3.bio = profile.value.bio.trim();
+    }
+
+    const cleanedBusiness = {
+      positioningStatement: profile.value.business.positioningStatement.trim(),
+      audience: profile.value.business.audience.trim(),
+      primaryProblem: profile.value.business.primaryProblem.trim(),
+      solution: profile.value.business.solution.trim(),
+      targetMarket: profile.value.business.targetMarket.trim(),
+      primaryOutcome: profile.value.business.primaryOutcome.trim(),
+    };
+
+    if (
+      cleanedBusiness.positioningStatement ||
+      cleanedBusiness.audience ||
+      cleanedBusiness.primaryProblem ||
+      cleanedBusiness.solution ||
+      cleanedBusiness.targetMarket ||
+      cleanedBusiness.primaryOutcome
+    ) {
+      me3.business = Object.fromEntries(
+        Object.entries(cleanedBusiness).filter(([, value]) => Boolean(value)),
+      ) as Me3BusinessContext;
+    }
+
+    if (profile.value.avatar) {
+      // Use relative path so images work on /preview/:username/ (localhost) and subdomains
+      // If there's a blob, use standard path. Otherwise convert URL to relative path.
+      me3.avatar = profile.value.avatarBlob
+        ? "./files/avatar.jpg"
+        : fileReferenceToRelativePath(profile.value.avatar) ||
+          profile.value.avatar;
+    }
+
+    if (profile.value.banner) {
+      me3.banner = profile.value.bannerBlob
+        ? "./files/banner.jpg"
+        : fileReferenceToRelativePath(profile.value.banner) ||
+          profile.value.banner;
+    }
+
+    // Only include links that have values
+    const validLinks = Object.entries(profile.value.links)
+      .filter(([_, value]) => value && value.trim())
+      .reduce((acc, [key, value]) => ({ ...acc, [key]: value.trim() }), {});
+
+    if (Object.keys(validLinks).length > 0) {
+      me3.links = validLinks;
+    }
+
+    if (profile.value.buttons.length > 0) {
+      me3.buttons = profile.value.buttons;
+    }
+
+    if (pages.value.length > 0) {
+      me3.pages = pages.value.map((p) => ({
+        slug: p.slug,
+        title: p.title,
+        file: `${p.slug}.md`,
+        visible: p.visible !== false,
+      }));
+    }
+
+    if (blogEnabled.value && posts.value.length > 0) {
+      me3.posts = posts.value.map((p) => {
+        const post: {
+          slug: string;
+          title: string;
+          file: string;
+          type?: WizardPostType;
+          media?: WizardPostMedia;
+          publishedAt?: string;
+          excerpt?: string;
+          draft?: boolean;
+        } = {
+          slug: p.slug,
+          title: p.title,
+          file: `blog/${p.slug}.md`,
+        };
+        if (p.type) post.type = p.type;
+        if (p.media && Object.keys(p.media).length > 0) {
+          post.media = p.media;
+        }
+        if (p.publishedAt) post.publishedAt = p.publishedAt;
+        if (p.excerpt) post.excerpt = p.excerpt;
+        if (p.draft) post.draft = p.draft;
+        return post;
+      });
+      const cleanedBlogTitle = blogTitle.value.trim();
+      if (cleanedBlogTitle && cleanedBlogTitle !== DEFAULT_BLOG_TITLE) {
+        me3.blogTitle = cleanedBlogTitle;
+      }
+    }
+
+    if (shopEnabled.value && products.value.length > 0) {
+      me3.products = products.value.map((p) => {
+          const product: import("me3-protocol").Me3Product & {
+            confirmationEmail?: WizardProductConfirmationEmail;
+          } = {
+            slug: p.slug,
+            title: p.title,
+            file: `shop/${p.slug}.md`,
+            price: p.price,
+            currency: p.currency,
+            images: undefined,
+            available: undefined,
+            publishedAt: undefined,
+            excerpt: undefined,
+          };
+          if (typeof p.available === "boolean") {
+            product.available = p.available;
+          }
+          if (p.publishedAt) product.publishedAt = p.publishedAt;
+          if (p.excerpt) product.excerpt = p.excerpt;
+          if (productSendsPurchaseConfirmation(p.confirmationEmail)) {
+            product.confirmationEmail = {
+              enabled: true,
+              subject: p.confirmationEmail!.subject.trim(),
+              message: p.confirmationEmail!.message.trim(),
+            };
+          }
+          return product;
+        }) as import("me3-protocol").Me3Product[];
+      const cleanedShopTitle = shopTitle.value.trim();
+      if (cleanedShopTitle && cleanedShopTitle !== DEFAULT_SHOP_TITLE) {
+        me3.shopTitle = cleanedShopTitle;
+      }
+    }
+
+    const publishableT = publishableTestimonials();
+    if (testimonialsEnabled.value && publishableT.length > 0) {
+      const cleaned = publishableT.map((t, idx) => {
+        const slot = idx + 1;
+        const name = t.name.trim();
+        const quote = t.quote.trim();
+        const handle = t.handle?.trim();
+        const profileUrl = t.profileUrl?.trim();
+
+        let avatarOut: string | undefined;
+        if (t.avatarBlob) {
+          avatarOut = `./files/testimonial-${slot}.${blobImageExt(t.avatarBlob)}`;
+        } else if (t.avatar?.trim()) {
+          const raw = t.avatar.trim();
+          if (!raw.startsWith("data:") && !raw.startsWith("blob:")) {
+            const rel = fileReferenceToRelativePath(raw);
+            avatarOut = rel ?? raw;
+          }
+        }
+
+        return {
+          name,
+          quote,
+          ...(handle ? { handle: handle.replace(/^@/, "") } : {}),
+          ...(avatarOut ? { avatar: avatarOut } : {}),
+          ...(profileUrl ? { profileUrl } : {}),
+        } as WizardTestimonial;
+      });
+
+      if (cleaned.length > 0) {
+        me3.testimonials = cleaned;
+        const normalizedPlacement = normalizeTestimonialPlacement(
+          testimonialsPlacement.value,
+          {
+            blogEnabled: blogEnabled.value,
+            shopEnabled: shopEnabled.value,
+            pages: pages.value,
+          },
+        );
+        if (normalizedPlacement !== "homepage") {
+          if (normalizedPlacement === "standalone") {
+            me3.testimonialDisplay = normalizedPlacement;
+          } else {
+            me3.links = {
+              ...(me3.links || {}),
+              [TESTIMONIAL_PLACEMENT_LINK_KEY]: normalizedPlacement,
+            };
+          }
+        }
+        const cleanedTitle = testimonialsTitle.value.trim();
+        if (
+          cleanedTitle &&
+          cleanedTitle !== DEFAULT_TESTIMONIALS_TITLE
+        ) {
+          me3.testimonialsTitle = cleanedTitle;
+        }
+      }
+    }
+
+    // Store vibe and theme customization as extensions under links (not protocol top-level fields)
+    if (vibe.value && vibe.value !== defaultVibe) {
+      me3.links = {
+        ...(me3.links || {}),
+        _vibe: vibe.value,
+      };
+    }
+
+    // Store accent override if set
+    if (accentOverride.value) {
+      me3.links = {
+        ...(me3.links || {}),
+        _accent: accentOverride.value,
+      };
+    }
+
+    // Footer (Pro feature; enforced server-side)
+    if (profile.value.footer?.mode === "none") {
+      (me3 as any).footer = false;
+    } else if (profile.value.footer?.mode === "custom") {
+      const text = profile.value.footer.text.trim();
+      const linkText = profile.value.footer.linkText.trim();
+      const linkUrl = profile.value.footer.linkUrl.trim();
+
+      const footer: any = {};
+      if (text) footer.text = text;
+      if (linkText && linkUrl) footer.link = { text: linkText, url: linkUrl };
+
+      if (footer.text || footer.link) {
+        (me3 as any).footer = footer;
+      }
+    }
+
+    // Intents (newsletter, booking)
+    const intents: {
+      subscribe?: Me3IntentSubscribe;
+      book?: Me3IntentBook;
+      shop?: {
+        enabled: boolean;
+        title?: string;
+        description?: string;
+        currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+      };
+      gift?: {
+        enabled: boolean;
+        title?: string;
+        description?: string;
+        suggestedAmount: number;
+        currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+        minimumAmount: 5;
+        icon?: string;
+      };
+    } = {};
+
+    if (profile.value.newsletter?.enabled) {
+      const subscribe: Me3IntentSubscribe = {
+        enabled: true,
+      };
+
+      if (profile.value.newsletter.title.trim()) {
+        subscribe.title = profile.value.newsletter.title.trim();
+      }
+      if (profile.value.newsletter.description.trim()) {
+        subscribe.description = profile.value.newsletter.description.trim();
+      }
+
+      intents.subscribe = subscribe;
+    }
+
+    if (profile.value.booking?.enabled) {
+      // Build availability windows, only include days with time slots
+      const windows: Record<string, string[]> = {};
+      const days = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+      ] as const;
+
+      for (const day of days) {
+        const dayWindows = profile.value.booking.availability[day];
+        if (dayWindows && dayWindows.length > 0) {
+          windows[day] = dayWindows;
+        }
+      }
+
+      const oneToOneEnabled =
+        profile.value.booking.oneToOneEnabled &&
+        Object.keys(windows).length > 0;
+      const classEnabled = profile.value.booking.classEnabled;
+      const retreatEnabled = profile.value.booking.retreatEnabled;
+
+      if (oneToOneEnabled || classEnabled || retreatEnabled) {
+        const sourceBookingOffers = profile.value.booking.offers;
+        const bookingOffers = profile.value.booking.offers.map((offer, index) => {
+          const normalizedTitle =
+            offer.title.trim() || `${offer.duration}-min Session`;
+          return {
+            id:
+              offer.id.trim() ||
+              generateSlug(normalizedTitle) ||
+              `book-session-${index + 1}`,
+            title: normalizedTitle,
+            description: offer.description.trim(),
+            duration: offer.duration,
+            pricing: offer.pricing
+              ? {
+                  enabled: offer.pricing.enabled,
+                  suggestedAmount: offer.pricing.suggestedAmount,
+                  currency: offer.pricing.currency as "USD" | "GBP" | "EUR",
+                  minimumAmount: offer.pricing.minimumAmount,
+                  allowFlexiblePricing: offer.pricing.allowFlexiblePricing,
+                  allowFree: offer.pricing.allowFree,
+                }
+              : undefined,
+          };
+        });
+        const bookingClasses = profile.value.booking.classOffers.map((offer, index) => {
+          const normalizedTitle = offer.title.trim() || `Class ${index + 1}`;
+          return {
+            id:
+              offer.id.trim() ||
+              generateSlug(normalizedTitle) ||
+              `booking-class-${index + 1}`,
+            title: normalizedTitle,
+            description: offer.description.trim(),
+            duration: offer.duration,
+            timezone: offer.timezone,
+            recurrence: { ...offer.recurrence },
+            pricing: offer.pricing
+              ? {
+                  enabled: offer.pricing.enabled,
+                  suggestedAmount: offer.pricing.suggestedAmount,
+                  currency: offer.pricing.currency as "USD" | "GBP" | "EUR",
+                  minimumAmount: offer.pricing.minimumAmount,
+                  allowFlexiblePricing: offer.pricing.allowFlexiblePricing,
+                  allowFree: offer.pricing.allowFree,
+                }
+              : undefined,
+            capacity: offer.capacity,
+          };
+        });
+        const bookingRetreats = profile.value.booking.retreatOffers.map((offer, index) => {
+          const normalizedTitle = offer.title.trim() || `Retreat ${index + 1}`;
+          return {
+            id:
+              offer.id.trim() ||
+              generateSlug(normalizedTitle) ||
+              `booking-retreat-${index + 1}`,
+            title: normalizedTitle,
+            description: offer.description.trim(),
+            durationDays: deriveRetreatDurationDays(offer),
+            startDate: offer.startDate,
+            startTime: offer.startTime,
+            endDate: offer.endDate,
+            endTime: offer.endTime,
+            timezone: offer.timezone,
+            pricing: offer.pricing
+              ? {
+                  enabled: offer.pricing.enabled,
+                  suggestedAmount: offer.pricing.suggestedAmount,
+                  currency: offer.pricing.currency as "USD" | "GBP" | "EUR",
+                  minimumAmount: offer.pricing.minimumAmount,
+                  allowFlexiblePricing: offer.pricing.allowFlexiblePricing,
+                  allowFree: offer.pricing.allowFree,
+                }
+              : undefined,
+            capacity: offer.capacity,
+          };
+        });
+        const primaryOffer = bookingOffers[0] || {
+          id: "book-session",
+          title: "Book a session",
+          description: "",
+          duration: 30,
+          pricing: undefined,
+        };
+        const primarySourceOffer = sourceBookingOffers[0];
+
+        const book: ExtendedMe3IntentBook = {
+          enabled: true,
+          reminders: { ...profile.value.booking.reminders },
+          bookingTypes: [],
+        };
+
+        if (oneToOneEnabled) {
+          book.duration = primaryOffer.duration;
+          book.bufferTime = profile.value.booking.bufferTime || 0;
+          book.availability = {
+            timezone: profile.value.booking.timezone,
+            windows: windows,
+          };
+          book.offers = bookingOffers.map((offer): PublishedBookingOffer => {
+            const bookingOffer: PublishedBookingOffer = {
+              id: offer.id,
+              title: offer.title,
+              duration: offer.duration,
+            };
+            if (offer.description) {
+              bookingOffer.description = offer.description;
+            }
+            if (offer.pricing) {
+              bookingOffer.pricing = offer.pricing;
+            }
+            return bookingOffer;
+          });
+
+          const headingTitle = profile.value.booking.title?.trim();
+          const headingDescription = profile.value.booking.description?.trim();
+          if (headingTitle) {
+            book.title = headingTitle;
+          } else if (primarySourceOffer?.title.trim()) {
+            book.title = primarySourceOffer.title.trim();
+          }
+          if (headingDescription) {
+            book.description = headingDescription;
+          } else if (primarySourceOffer?.description.trim()) {
+            book.description = primarySourceOffer.description.trim();
+          }
+
+          if (primaryOffer.pricing) {
+            const pricing = primaryOffer.pricing;
+            const bookWithPricing = book as Me3IntentBook & {
+              pricing?: WizardBookingPricing;
+            };
+            bookWithPricing.pricing = {
+              enabled: pricing.enabled,
+              suggestedAmount: pricing.suggestedAmount,
+              currency: pricing.currency as "USD" | "GBP" | "EUR",
+              minimumAmount: pricing.minimumAmount,
+              allowFlexiblePricing: pricing.allowFlexiblePricing,
+              allowFree: pricing.allowFree,
+            };
+          }
+
+          book.bookingTypes!.push({
+            id: "one_to_one",
+            type: "one_to_one",
+            label: "1:1",
+            ...(book.title ? { title: book.title } : {}),
+            ...(book.description ? { description: book.description } : {}),
+            availability: {
+              timezone: profile.value.booking.timezone,
+              windows: windows,
+            },
+            offers: book.offers,
+          });
+        }
+
+        if (classEnabled) {
+          book.classes = bookingClasses.map((offer): PublishedBookingClass => {
+            const bookingClass: PublishedBookingClass = {
+              id: offer.id,
+              title: offer.title,
+              duration: offer.duration,
+              timezone: offer.timezone,
+              recurrence: { ...offer.recurrence },
+              capacity: offer.capacity,
+            };
+            if (offer.description) {
+              bookingClass.description = offer.description;
+            }
+            if (offer.pricing) {
+              bookingClass.pricing = offer.pricing;
+            }
+            return bookingClass;
+          });
+
+          book.bookingTypes!.push({
+            id: "class",
+            type: "class",
+            label: "Classes",
+            classes: book.classes,
+          });
+        }
+
+        if (retreatEnabled) {
+          book.retreats = bookingRetreats.map((offer): PublishedBookingRetreat => {
+            const r: PublishedBookingRetreat = {
+              id: offer.id,
+              title: offer.title,
+              durationDays: deriveRetreatDurationDays(offer),
+              startDate: offer.startDate,
+              startTime: offer.startTime,
+              endDate: offer.endDate,
+              endTime: offer.endTime,
+              timezone: offer.timezone,
+              capacity: offer.capacity,
+            };
+            if (offer.description) {
+              r.description = offer.description;
+            }
+            if (offer.pricing) {
+              r.pricing = offer.pricing;
+            }
+            return r;
+          });
+
+          book.bookingTypes!.push({
+            id: "retreat",
+            type: "retreat",
+            label: "Retreats",
+            retreats: book.retreats,
+          });
+        }
+
+        if (book.bookingTypes && book.bookingTypes.length > 0) {
+          intents.book = book;
+        }
+      }
+    }
+
+    if (shopEnabled.value) {
+      const productCurrency =
+        products.value[0]?.currency ||
+        profile.value.booking.offers.find((offer) => offer.pricing?.enabled)
+          ?.pricing?.currency;
+      if (productCurrency) {
+        intents.shop = {
+          enabled: true,
+          currency: productCurrency as "USD" | "GBP" | "EUR",
+        };
+      }
+    }
+
+    if (profile.value.gift?.enabled) {
+      const gift = profile.value.gift;
+      intents.gift = {
+        enabled: true,
+        suggestedAmount: gift.suggestedAmount,
+        currency: gift.currency as "USD" | "GBP" | "EUR",
+        minimumAmount: gift.minimumAmount,
+      };
+      if (gift.title.trim()) intents.gift.title = gift.title.trim();
+      if (gift.description.trim()) {
+        intents.gift.description = gift.description.trim();
+      }
+      if (gift.icon && gift.icon.trim()) {
+        intents.gift.icon = gift.icon.trim();
+      }
+    }
+
+    if (Object.keys(intents).length > 0) {
+      me3.intents = intents as Me3Profile["intents"];
+    }
+
+    const handle = me3.handle?.trim();
+    const publicApiBase = getPublicApiBase();
+    const actions: Record<string, Me3ActionDefinition> = {};
+    const services: Me3Service[] = [];
+
+    if (handle && intents.subscribe?.enabled) {
+      actions.subscribe = {
+        method: "POST",
+        url: `${publicApiBase}/sites/${handle}/subscribe`,
+        requires: ["email"],
+        description: "Subscribe someone to this site's newsletter.",
+      };
+    }
+
+    if (
+      handle &&
+      intents.book?.enabled &&
+      intents.book.availability &&
+      Object.keys(intents.book.availability.windows || {}).length > 0
+    ) {
+      const bookingOffers =
+        (intents.book as ExtendedMe3IntentBook).offers &&
+        (intents.book as ExtendedMe3IntentBook).offers!.length > 0
+          ? (intents.book as ExtendedMe3IntentBook).offers!
+          : [
+              {
+                id: generateSlug(intents.book.title?.trim() || "Book a session") ||
+                  "book-session",
+                title: intents.book.title?.trim() || "Book a session",
+                description: intents.book.description?.trim(),
+                duration: intents.book.duration,
+                pricing: intents.book.pricing as WizardBookingPricing | undefined,
+              },
+            ];
+      const requiresOfferId = bookingOffers.length > 1;
+      const hasPaidBookingOffer = bookingOffers.some(
+        (offer) => offer.pricing?.enabled,
+      );
+
+      for (const offer of bookingOffers) {
+        const service: Me3Service = {
+          id: offer.id,
+          title: offer.title,
+          sessionType: "1:1",
+          duration: offer.duration,
+          availabilityMode: "native",
+          status: "active",
+        };
+
+        if (offer.description?.trim()) {
+          service.description = offer.description.trim();
+        }
+
+        if (offer.pricing?.enabled) {
+          service.price = offer.pricing.suggestedAmount;
+          service.currency = offer.pricing.currency as "USD" | "GBP" | "EUR";
+        }
+
+        services.push(service);
+      }
+
+      if (
+        bookingOffers.length === 1 &&
+        bookingOffers[0]?.pricing?.enabled &&
+        bookingOffers[0].pricing.allowFree
+      ) {
+        services.push({
+          id: "free-intro-session",
+          title: "Free Intro Session",
+          description:
+            "A free introductory session to explore fit and next steps.",
+          sessionType: "1:1",
+          duration: bookingOffers[0].duration,
+          price: 0,
+          currency: bookingOffers[0].pricing.currency as "USD" | "GBP" | "EUR",
+          availabilityMode: "native",
+          status: "active",
+        });
+      }
+
+      actions.checkAvailability = {
+        method: "GET",
+        url: `${publicApiBase}/book/${handle}/slots{?date}`,
+        requires: requiresOfferId ? ["date", "offerId"] : ["date"],
+        description: "Return available booking slots for a given date.",
+      };
+
+      const bookingRequires = [
+        "slotStart",
+        "slotEnd",
+        "guestName",
+        "guestEmail",
+      ];
+
+      if (requiresOfferId) {
+        bookingRequires.unshift("offerId");
+      }
+
+      if (
+        bookingOffers.length === 1 &&
+        bookingOffers[0]?.pricing?.enabled &&
+        !bookingOffers[0].pricing.allowFree
+      ) {
+        bookingRequires.push("paymentIntentId");
+      }
+
+      actions.createBooking = {
+        method: "POST",
+        url: `${publicApiBase}/book/${handle}/confirm`,
+        requires: bookingRequires,
+        description: "Create a confirmed booking for a selected slot.",
+      };
+
+      if (hasPaidBookingOffer) {
+        const checkoutRequires = [
+          "slotStart",
+          "slotEnd",
+          "amount",
+          "currency",
+          "guestName",
+          "guestEmail",
+        ];
+        if (requiresOfferId) {
+          checkoutRequires.unshift("offerId");
+        }
+
+        actions.createBookingCheckout = {
+          method: "POST",
+          url: `${publicApiBase}/book/${handle}/checkout-session`,
+          requires: checkoutRequires,
+          description: "Create a Stripe Checkout session for a paid booking.",
+        };
+      }
+    }
+
+    if (services.length > 0) {
+      me3.services = services;
+    }
+
+    if (Object.keys(actions).length > 0) {
+      me3.actions = actions;
+    }
+
+    return me3;
+  }
+
+  // LocalStorage persistence
+  function saveToStorage() {
+    try {
+      // Don't save blobs to localStorage
+      const state = {
+        ownerUserId: sessionUserId.value,
+        currentStep: currentStep.value,
+        furthestStep: furthestStep.value,
+        profile: {
+          ...profile.value,
+          avatarBlob: null,
+          bannerBlob: null,
+          avatarOriginalBlob: null,
+          bannerOriginalBlob: null,
+        },
+        pages: pages.value.map((p) => ({
+          ...p,
+          images: [],
+        })),
+        posts: sanitizeWizardPosts(posts.value).map((p) => ({
+          ...p,
+          images: [],
+          mediaFile: null,
+        })),
+        products: products.value.map((p) => ({
+          ...p,
+          images: [],
+        })),
+        testimonials: testimonials.value.map((t) => {
+          const { avatarBlob: _ab, ...rest } = t;
+          const av = rest.avatar;
+          const avatar =
+            typeof av === "string" &&
+            (av.startsWith("data:") || av.startsWith("blob:"))
+              ? undefined
+              : av;
+          return { ...rest, ...(avatar !== undefined ? { avatar } : {}) };
+        }),
+        username: username.value,
+        vibe: vibe.value,
+        accentOverride: accentOverride.value,
+        newsletterEnabled: newsletterEnabled.value,
+        blogEnabled: blogEnabled.value,
+        bookingsEnabled: bookingsEnabled.value,
+        shopEnabled: shopEnabled.value,
+        testimonialsEnabled: testimonialsEnabled.value,
+        blogTitle: blogTitle.value,
+        shopTitle: shopTitle.value,
+        testimonialsPlacement: testimonialsPlacement.value,
+        testimonialsTitle: testimonialsTitle.value,
+        lastPublishedAt: lastPublishedAt.value,
+        lastLocalEditAt: lastLocalEditAt.value,
+        lastSiteEditAt: lastSiteEditAt.value,
+        draftSourceUrl: draftSourceUrl.value,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      console.warn("Failed to save wizard state:", e);
+    }
+  }
+
+  function loadFromStorage() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const state = JSON.parse(saved);
+        persistedOwnerUserId.value =
+          typeof state.ownerUserId === "string" ? state.ownerUserId : null;
+        const storedProfile = state.profile || {};
+        const storedBooking = storedProfile.booking || {};
+        profile.value = {
+          ...defaultProfile,
+          ...storedProfile,
+          business: normalizeBusinessConfig(storedProfile.business),
+          booking: normalizeWizardBookingConfig(storedBooking),
+          newsletter: {
+            ...defaultProfile.newsletter,
+            ...(storedProfile.newsletter || {}),
+          },
+          gift: {
+            ...defaultProfile.gift,
+            ...(storedProfile.gift || {}),
+          },
+          footer: {
+            ...defaultProfile.footer,
+            ...(storedProfile.footer || {}),
+          },
+        };
+        pages.value = (state.pages || []).map((p: any) => ({
+          ...p,
+          slugCustomized: inferSlugCustomized(
+            typeof p.title === "string" ? p.title : "",
+            typeof p.slug === "string" ? p.slug : "",
+            "page",
+            p.slugCustomized,
+          ),
+          images: [],
+        }));
+        posts.value = sanitizeWizardPosts(state.posts || []);
+        products.value = (state.products || []).map((p: any) => ({
+          ...p,
+          slugCustomized: inferSlugCustomized(
+            typeof p.title === "string" ? p.title : "",
+            typeof p.slug === "string" ? p.slug : "",
+            "product",
+            p.slugCustomized,
+          ),
+          images: [],
+        }));
+        testimonials.value = (state.testimonials || []).map((t: any) => {
+          const av = t.avatar;
+          return {
+            ...t,
+            avatarBlob: null,
+            avatar:
+              typeof av === "string" &&
+              (av.startsWith("data:") || av.startsWith("blob:"))
+                ? undefined
+                : av,
+          };
+        });
+        username.value = state.username || "";
+        vibe.value = state.vibe || defaultVibe;
+        accentOverride.value = state.accentOverride || null;
+        newsletterEnabled.value =
+          typeof state.newsletterEnabled === "boolean"
+            ? state.newsletterEnabled
+            : true;
+        blogEnabled.value =
+          typeof state.blogEnabled === "boolean"
+            ? state.blogEnabled
+            : sanitizeWizardPosts(state.posts || []).length > 0;
+        bookingsEnabled.value =
+          typeof state.bookingsEnabled === "boolean"
+            ? state.bookingsEnabled
+            : true;
+        shopEnabled.value =
+          typeof state.shopEnabled === "boolean"
+            ? state.shopEnabled
+            : (state.products || []).length > 0;
+        testimonialsEnabled.value =
+          typeof state.testimonialsEnabled === "boolean"
+            ? state.testimonialsEnabled
+            : (state.testimonials || []).length > 0;
+        blogTitle.value =
+          typeof state.blogTitle === "string" && state.blogTitle.trim().length > 0
+            ? state.blogTitle
+            : DEFAULT_BLOG_TITLE;
+        shopTitle.value =
+          typeof state.shopTitle === "string" && state.shopTitle.trim().length > 0
+            ? state.shopTitle
+            : DEFAULT_SHOP_TITLE;
+        testimonialsTitle.value =
+          typeof state.testimonialsTitle === "string" &&
+          state.testimonialsTitle.trim().length > 0
+            ? state.testimonialsTitle
+            : DEFAULT_TESTIMONIALS_TITLE;
+        testimonialsPlacement.value = normalizeTestimonialPlacement(
+          state.testimonialsPlacement,
+          {
+            blogEnabled: blogEnabled.value,
+            shopEnabled: shopEnabled.value,
+            pages: pages.value,
+          },
+        );
+        lastPublishedAt.value = state.lastPublishedAt || null;
+        lastLocalEditAt.value =
+          state.lastLocalEditAt || new Date().toISOString();
+        lastSiteEditAt.value = state.lastSiteEditAt || lastLocalEditAt.value;
+        draftSourceUrl.value =
+          typeof state.draftSourceUrl === "string" &&
+          state.draftSourceUrl.trim().length > 0
+            ? state.draftSourceUrl
+            : null;
+
+        const hasBusinessContext =
+          !!storedProfile.business &&
+          typeof storedProfile.business === "object";
+        const shouldMigrateOfferingsStep =
+          !hasBusinessContext && state.shopEnabled === false;
+        const migrateStepIndex = (step: number) =>
+          shouldMigrateOfferingsStep && step >= 11 ? step + 1 : step;
+
+        const savedCurrentStep =
+          typeof state.currentStep === "number" ? state.currentStep : 1;
+        currentStep.value = Math.min(
+          Math.max(migrateStepIndex(savedCurrentStep), 1),
+          totalSteps.value,
+        );
+        const savedFurthestStep =
+          typeof state.furthestStep === "number"
+            ? state.furthestStep
+            : currentStep.value;
+        furthestStep.value = Math.min(
+          Math.max(
+            migrateStepIndex(savedFurthestStep),
+            currentStep.value,
+            1,
+          ),
+          totalSteps.value,
+        );
+
+        profile.value.newsletter = {
+          ...profile.value.newsletter,
+          enabled: newsletterEnabled.value,
+        };
+      } else {
+        persistedOwnerUserId.value = null;
+      }
+    } catch (e) {
+      console.warn("Failed to load wizard state:", e);
+    }
+  }
+
+  function reconcileSession(userId: string | null) {
+    sessionUserId.value = userId;
+    if (persistedOwnerUserId.value === userId) {
+      return;
+    }
+    reset();
+  }
+
+  function reset() {
+    // Revoke any temp image URLs before dropping state
+    for (const page of pages.value) {
+      if (page.images?.length) {
+        for (const img of page.images) {
+          if (img.tempUrl) {
+            try {
+              URL.revokeObjectURL(img.tempUrl);
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    }
+    for (const post of posts.value) {
+      if (post.images?.length) {
+        for (const img of post.images) {
+          if (img.tempUrl) {
+            try {
+              URL.revokeObjectURL(img.tempUrl);
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    }
+    for (const product of products.value) {
+      if (product.images?.length) {
+        for (const img of product.images) {
+          if (img.tempUrl) {
+            try {
+              URL.revokeObjectURL(img.tempUrl);
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    }
+    currentStep.value = 1;
+    furthestStep.value = 1;
+    profile.value = { ...defaultProfile };
+    pages.value = [];
+    posts.value = [];
+    products.value = [];
+    testimonials.value = [];
+    username.value = "";
+    vibe.value = defaultVibe;
+    accentOverride.value = null;
+    isUsernameAvailable.value = null;
+    publishError.value = null;
+    lastPublishedAt.value = null;
+    lastLocalEditAt.value = new Date().toISOString();
+    lastSiteEditAt.value = lastLocalEditAt.value;
+    draftSourceUrl.value = null;
+    newsletterEnabled.value = true;
+    blogEnabled.value = false;
+    bookingsEnabled.value = true;
+    shopEnabled.value = false;
+    testimonialsEnabled.value = false;
+    blogTitle.value = DEFAULT_BLOG_TITLE;
+    shopTitle.value = DEFAULT_SHOP_TITLE;
+    testimonialsPlacement.value = "homepage";
+    testimonialsTitle.value = DEFAULT_TESTIMONIALS_TITLE;
+    persistedOwnerUserId.value = sessionUserId.value;
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  // Set vibe
+  function setVibe(newVibe: VibeId) {
+    vibe.value = newVibe;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  // Set accent color override
+  function setAccentOverride(color: string | null) {
+    accentOverride.value = color;
+    markAsEdited();
+    saveToStorage();
+  }
+
+  // Mark site as published
+  function markAsPublished() {
+    const now = new Date().toISOString();
+    lastPublishedAt.value = now;
+    lastSiteEditAt.value = now;
+    saveToStorage();
+  }
+
+  /**
+   * Load wizard state from existing site content (for editing)
+   */
+  function loadFromSiteContent(
+    siteProfile: {
+      name: string;
+      handle?: string;
+      bio?: string;
+      avatar?: string;
+      banner?: string;
+      links?: Record<string, string | undefined>;
+      pages?: Array<{
+        slug: string;
+        title: string;
+        file: string;
+        visible: boolean;
+      }>;
+      footer?: any;
+      buttons?: Array<{
+        text: string;
+        url: string;
+        style?: string;
+        icon?: string;
+      }>;
+      intents?: {
+        subscribe?: {
+          enabled?: boolean;
+          title?: string;
+          description?: string;
+        };
+        book?: {
+          enabled?: boolean;
+          title?: string;
+          description?: string;
+          duration?: number;
+          bufferTime?: number;
+          pricing?: WizardBookingPricing;
+          offers?: PublishedBookingOffer[];
+          classes?: PublishedBookingClass[];
+          retreats?: PublishedBookingRetreat[];
+          bookingTypes?: PublishedBookingType[];
+          availability?: {
+            timezone?: string;
+            windows?: Record<string, string[]>;
+          };
+        };
+        shop?: {
+          enabled?: boolean;
+          title?: string;
+          description?: string;
+          currency?: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+        };
+        gift?: {
+          enabled?: boolean;
+          title?: string;
+          description?: string;
+          suggestedAmount?: number;
+          currency?: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+          icon?: string;
+        };
+      };
+      testimonials?: WizardTestimonial[];
+      blogTitle?: string;
+      shopTitle?: string;
+      testimonialDisplay?: TestimonialPlacement;
+      testimonialsTitle?: string;
+    },
+    sitePages: Array<{ slug: string; title: string; content: string }>,
+    sitePosts: Array<{
+      slug: string;
+      title: string;
+      content: string;
+      /** Legacy wizard standalone social; stripped when hydrating the blog step. */
+      type?: "article" | "note" | "video" | "audio" | "image" | "link" | "social";
+      media?: {
+        url?: string;
+        duration?: number;
+        thumbnail?: string;
+        provider?: string;
+        id?: string;
+      };
+      publishedAt?: string;
+      excerpt?: string;
+      draft?: boolean;
+    }>,
+    siteProducts: Array<{
+      slug: string;
+      title: string;
+      content: string;
+      price: number;
+      currency: "USD" | "GBP" | "EUR" | "CAD" | "AUD" | "CHF" | "SGD" | "INR" | "PKR";
+      available?: boolean;
+      publishedAt?: string;
+      excerpt?: string;
+      confirmationEmail?: WizardProductConfirmationEmail;
+    }>,
+    siteUsername: string,
+    sitePublishedAt?: string | null,
+    siteSourceUrl?: string | null,
+  ) {
+    // Reset first
+    reset();
+
+    // Set username
+    username.value = siteUsername;
+    isUsernameAvailable.value = true; // Already claimed by this user
+
+    // Map profile data - cast buttons to proper type
+    const buttons: Me3Button[] = (siteProfile.buttons || []).map((b) => ({
+      text: b.text,
+      url: b.url,
+      style: b.style as "primary" | "secondary" | "outline" | undefined,
+      icon: b.icon,
+    }));
+
+    // Extract link order from existing links (preserve order from object keys)
+    // Also extract vibe and accent override from special _ prefixed keys
+    const links = siteProfile.links || {};
+
+    // Extract vibe and accent override before filtering
+    const savedVibe = links._vibe as string | undefined;
+    const savedAccent = links._accent as string | undefined;
+
+    // Filter out special keys and empty values for regular links
+    const filteredLinks: Record<string, string> = {};
+    const linkOrder: string[] = [];
+    for (const [key, value] of Object.entries(links)) {
+      if (!key.startsWith("_") && value) {
+        filteredLinks[key] = value;
+        linkOrder.push(key);
+      }
+    }
+
+    // Set vibe if valid, otherwise use default
+    if (savedVibe && vibeIds.includes(savedVibe as VibeId)) {
+      vibe.value = savedVibe as VibeId;
+    } else {
+      vibe.value = defaultVibe;
+    }
+
+    // Set accent override if present
+    accentOverride.value = savedAccent || null;
+
+    const rawFooter = (siteProfile as any).footer as
+      | false
+      | { text?: string; link?: { text?: string; url?: string } }
+      | undefined;
+
+    const footer: WizardFooterConfig =
+      rawFooter === false
+        ? { mode: "none", text: "", linkText: "", linkUrl: "" }
+        : rawFooter && typeof rawFooter === "object"
+          ? {
+              mode: "custom",
+              text: (rawFooter.text || "").toString(),
+              linkText: (rawFooter.link?.text || "").toString(),
+              linkUrl: (rawFooter.link?.url || "").toString(),
+            }
+          : { ...defaultProfile.footer };
+
+    // Extract newsletter/intents config
+    const rawIntents = siteProfile.intents;
+    const newsletter: WizardNewsletterConfig = rawIntents?.subscribe?.enabled
+      ? {
+          enabled: true,
+          title: rawIntents.subscribe.title || "",
+          description: rawIntents.subscribe.description || "",
+        }
+      : { ...defaultProfile.newsletter, enabled: false };
+
+    // Extract booking config
+    const rawBook = rawIntents?.book as
+      | ExtendedMe3IntentBook
+      | undefined;
+    const rawOneToOneType = rawBook?.bookingTypes?.find(
+      (entry) => entry.type === "one_to_one",
+    );
+    const rawClassType = rawBook?.bookingTypes?.find(
+      (entry) => entry.type === "class",
+    );
+    const rawRetreatType = rawBook?.bookingTypes?.find(
+      (entry) => entry.type === "retreat",
+    );
+    const rawClassOffers =
+      rawClassType?.classes && rawClassType.classes.length > 0
+        ? rawClassType.classes
+        : rawBook?.classes || [];
+    const rawRetreatOffers =
+      rawRetreatType?.retreats && rawRetreatType.retreats.length > 0
+        ? rawRetreatType.retreats
+        : rawBook?.retreats || [];
+    const booking: WizardBookingConfig = rawBook?.enabled
+      ? normalizeWizardBookingConfig({
+          enabled: true,
+          title: rawOneToOneType?.title ?? rawBook.title,
+          description: rawOneToOneType?.description ?? rawBook.description,
+          oneToOneEnabled:
+            rawOneToOneType !== undefined
+              ? true
+              : (rawBook.offers && rawBook.offers.length > 0) ||
+                !!rawBook.availability?.windows,
+          classEnabled:
+            rawClassType !== undefined || rawClassOffers.length > 0,
+          retreatEnabled:
+            rawRetreatType !== undefined || rawRetreatOffers.length > 0,
+          offers:
+            rawOneToOneType?.offers && rawOneToOneType.offers.length > 0
+              ? rawOneToOneType.offers.map((offer) => ({
+                  id: offer.id,
+                  title: offer.title,
+                  description: offer.description || "",
+                  duration: (offer.duration as WizardBookingDuration) || 30,
+                  pricing: offer.pricing
+                    ? {
+                        ...defaultWizardBookingPricing(),
+                        ...offer.pricing,
+                        allowFlexiblePricing:
+                          offer.pricing.allowFlexiblePricing ?? true,
+                        allowFree: offer.pricing.allowFree ?? false,
+                      }
+                    : undefined,
+                }))
+              : rawBook.offers && rawBook.offers.length > 0
+                ? rawBook.offers.map((offer) => ({
+                  id: offer.id,
+                  title: offer.title,
+                  description: offer.description || "",
+                  duration: (offer.duration as WizardBookingDuration) || 30,
+                  pricing: offer.pricing
+                    ? {
+                        ...defaultWizardBookingPricing(),
+                        ...offer.pricing,
+                        allowFlexiblePricing:
+                          offer.pricing.allowFlexiblePricing ?? true,
+                        allowFree: offer.pricing.allowFree ?? false,
+                      }
+                    : undefined,
+                }))
+              : [
+                  legacyBookingToDefaultOffer({
+                    title: rawBook.title,
+                    description: rawBook.description,
+                    duration: rawBook.duration,
+                    pricing: rawBook.pricing,
+                  }),
+                ],
+          classOffers: rawClassOffers.map((offer) => ({
+            id: offer.id,
+            title: offer.title,
+            description: offer.description || "",
+            duration: (offer.duration as WizardBookingDuration) || 60,
+            timezone:
+              offer.timezone ||
+              rawClassType?.availability?.timezone ||
+              Intl.DateTimeFormat().resolvedOptions().timeZone ||
+              "UTC",
+            recurrence: {
+              frequency:
+                offer.recurrence?.frequency === "biweekly"
+                  ? "biweekly"
+                  : "weekly",
+              weekday: offer.recurrence?.weekday || "monday",
+              startTime: offer.recurrence?.startTime || "18:00",
+            },
+            pricing: offer.pricing
+              ? {
+                  ...defaultWizardBookingPricing(),
+                  ...offer.pricing,
+                  allowFlexiblePricing:
+                    offer.pricing.allowFlexiblePricing ?? true,
+                  allowFree: offer.pricing.allowFree ?? false,
+                }
+              : undefined,
+            capacity:
+              typeof offer.capacity === "number" ? offer.capacity : null,
+          })),
+          retreatOffers: rawRetreatOffers.map((offer) => ({
+            id: offer.id,
+            title: offer.title,
+            description: offer.description || "",
+            startDate: offer.startDate || "",
+            startTime: offer.startTime || "09:00",
+            endDate: offer.endDate || "",
+            endTime: offer.endTime || "17:00",
+            timezone:
+              offer.timezone ||
+              rawRetreatType?.availability?.timezone ||
+              Intl.DateTimeFormat().resolvedOptions().timeZone ||
+              "UTC",
+            durationDays: deriveRetreatDurationDays({
+              startDate: offer.startDate || "",
+              startTime: offer.startTime || "09:00",
+              endDate: offer.endDate || "",
+              endTime: offer.endTime || "17:00",
+              durationDays: offer.durationDays,
+            }),
+            pricing: offer.pricing
+              ? {
+                  ...defaultWizardBookingPricing(),
+                  ...offer.pricing,
+                  allowFlexiblePricing:
+                    offer.pricing.allowFlexiblePricing ?? true,
+                  allowFree: offer.pricing.allowFree ?? false,
+                }
+              : undefined,
+            capacity:
+              typeof offer.capacity === "number" ? offer.capacity : null,
+          })),
+          bufferTime: rawBook.bufferTime,
+          reminders: rawBook.reminders,
+          timezone:
+            rawOneToOneType?.availability?.timezone || rawBook.availability?.timezone,
+          availability: {
+            monday:
+              rawOneToOneType?.availability?.windows?.monday ||
+              rawBook.availability?.windows?.monday ||
+              [],
+            tuesday:
+              rawOneToOneType?.availability?.windows?.tuesday ||
+              rawBook.availability?.windows?.tuesday ||
+              [],
+            wednesday:
+              rawOneToOneType?.availability?.windows?.wednesday ||
+              rawBook.availability?.windows?.wednesday ||
+              [],
+            thursday:
+              rawOneToOneType?.availability?.windows?.thursday ||
+              rawBook.availability?.windows?.thursday ||
+              [],
+            friday:
+              rawOneToOneType?.availability?.windows?.friday ||
+              rawBook.availability?.windows?.friday ||
+              [],
+            saturday:
+              rawOneToOneType?.availability?.windows?.saturday ||
+              rawBook.availability?.windows?.saturday ||
+              [],
+            sunday:
+              rawOneToOneType?.availability?.windows?.sunday ||
+              rawBook.availability?.windows?.sunday ||
+              [],
+          },
+        })
+      : { ...defaultProfile.booking };
+
+    const rawGift = rawIntents?.gift as Partial<WizardGiftConfig> | undefined;
+    const gift: WizardGiftConfig = rawGift?.enabled
+      ? {
+          enabled: true,
+          title: rawGift.title || "",
+          description: rawGift.description || "",
+          suggestedAmount: rawGift.suggestedAmount ?? 10,
+          currency: (rawGift.currency || "USD") as WizardGiftConfig["currency"],
+          minimumAmount: 5,
+          icon: rawGift.icon || "Gift",
+        }
+      : { ...defaultProfile.gift };
+
+    profile.value = {
+      name: siteProfile.name || "",
+      handle: siteProfile.handle || siteUsername,
+      location: (siteProfile as any).location || "",
+      bio: siteProfile.bio || "",
+      avatar: siteProfile.avatar || null,
+      banner: siteProfile.banner || null,
+      avatarBlob: null, // Can't restore blobs from server
+      bannerBlob: null,
+      avatarOriginalBlob: null,
+      bannerOriginalBlob: null,
+      links: filteredLinks,
+      linkOrder,
+      buttons,
+      footer,
+      newsletter,
+      booking,
+      gift,
+      business: {
+        ...normalizeBusinessConfig(
+          (siteProfile as {
+            business?: Partial<WizardBusinessConfig> | null;
+          }).business,
+        ),
+      },
+    };
+
+    // Map pages
+    const pageVisibility = new Map<string, boolean>();
+    if (Array.isArray(siteProfile.pages)) {
+      for (const page of siteProfile.pages) {
+        if (page?.slug) pageVisibility.set(page.slug, page.visible !== false);
+      }
+    }
+
+    const orderedSitePages: typeof sitePages = [];
+    const seenPageSlugs = new Set<string>();
+
+    if (Array.isArray(siteProfile.pages)) {
+      const sitePagesBySlug = new Map(sitePages.map((page) => [page.slug, page]));
+      for (const pageMeta of siteProfile.pages) {
+        const matchingPage = pageMeta?.slug
+          ? sitePagesBySlug.get(pageMeta.slug)
+          : undefined;
+        if (!matchingPage) continue;
+        orderedSitePages.push(matchingPage);
+        seenPageSlugs.add(matchingPage.slug);
+      }
+    }
+
+    for (const page of sitePages) {
+      if (seenPageSlugs.has(page.slug)) continue;
+      orderedSitePages.push(page);
+    }
+
+    pages.value = orderedSitePages.map((p) => ({
+      title: p.title,
+      slug: p.slug,
+      slugCustomized: inferSlugCustomized(p.title, p.slug, "page"),
+      content: p.content,
+      images: [],
+      visible: pageVisibility.get(p.slug) ?? true,
+    }));
+
+    const siteBlogPosts = sitePosts.filter(
+      (p) =>
+        !isStandaloneContentOrLegacyWizardSocialSlug(p.slug) && p.type !== "social",
+    );
+
+    posts.value = siteBlogPosts.map((p) => {
+      const type: WizardPostType = p.type === "video" ? "video" : "article";
+      return {
+        title: p.title,
+        slug: p.slug,
+        slugCustomized: inferSlugCustomized(p.title, p.slug, "post"),
+        content: p.content,
+        images: [],
+        type,
+        caption: "",
+        media: type === "video" ? p.media : undefined,
+        mediaFile: null,
+        publishedAt: p.publishedAt,
+        excerpt: p.excerpt,
+        draft: p.draft,
+      };
+    });
+
+    products.value = siteProducts.map((p) => {
+      const rawCe = p.confirmationEmail;
+      let confirmationEmail: WizardProductConfirmationEmail | undefined;
+      if (rawCe && typeof rawCe === "object") {
+        confirmationEmail = {
+          enabled: rawCe.enabled === true,
+          subject:
+            typeof rawCe.subject === "string" ? rawCe.subject : undefined,
+          message:
+            typeof rawCe.message === "string" ? rawCe.message : undefined,
+        };
+      }
+      return {
+        title: p.title,
+        slug: p.slug,
+        slugCustomized: inferSlugCustomized(p.title, p.slug, "product"),
+        content: p.content,
+        images: [],
+        price: p.price,
+        currency: p.currency,
+        available: p.available ?? true,
+        publishedAt: p.publishedAt,
+        excerpt: p.excerpt,
+        ...(confirmationEmail ? { confirmationEmail } : {}),
+      };
+    });
+
+    testimonials.value = (siteProfile.testimonials || []).map((t) => ({
+      name: t.name,
+      quote: t.quote,
+      handle: t.handle?.replace(/^@/, ""),
+      avatar: t.avatar,
+      avatarBlob: null,
+      profileUrl: t.profileUrl,
+    }));
+    blogTitle.value =
+      typeof siteProfile.blogTitle === "string" &&
+      siteProfile.blogTitle.trim().length > 0
+        ? siteProfile.blogTitle
+        : DEFAULT_BLOG_TITLE;
+    shopTitle.value =
+      typeof siteProfile.shopTitle === "string" &&
+      siteProfile.shopTitle.trim().length > 0
+        ? siteProfile.shopTitle
+        : DEFAULT_SHOP_TITLE;
+    testimonialsTitle.value =
+      typeof siteProfile.testimonialsTitle === "string" &&
+      siteProfile.testimonialsTitle.trim().length > 0
+        ? siteProfile.testimonialsTitle
+        : DEFAULT_TESTIMONIALS_TITLE;
+
+    // Restore enabled states from site content
+    newsletterEnabled.value = Boolean(siteProfile.intents?.subscribe?.enabled);
+    blogEnabled.value = siteBlogPosts.length > 0;
+    bookingsEnabled.value = Boolean(siteProfile.intents?.book?.enabled);
+    shopEnabled.value =
+      Boolean(siteProfile.intents?.shop?.enabled) || siteProducts.length > 0;
+    testimonialsEnabled.value = (siteProfile.testimonials || []).length > 0;
+    testimonialsPlacement.value = normalizeTestimonialPlacement(
+      getStoredTestimonialPlacement(siteProfile as {
+        testimonialDisplay?: unknown;
+        links?: Record<string, unknown>;
+      }),
+      {
+        blogEnabled: blogEnabled.value,
+        shopEnabled: shopEnabled.value,
+        pages: pages.value,
+      },
+    );
+    furthestStep.value = totalSteps.value;
+
+    // Set last published timestamp if site was published
+    if (sitePublishedAt) {
+      lastPublishedAt.value = sitePublishedAt;
+      // Mirror published timestamp as local edit baseline to avoid
+      // marking freshly-loaded content as needing publish.
+      lastLocalEditAt.value = sitePublishedAt;
+      lastSiteEditAt.value = sitePublishedAt;
+    }
+
+    draftSourceUrl.value =
+      typeof siteSourceUrl === "string" && siteSourceUrl.trim().length > 0
+        ? siteSourceUrl.trim()
+        : null;
+
+    // Save to storage so it persists
+    saveToStorage();
+  }
+
+  // Load state on init
+  loadFromStorage();
+
+  return {
+    // State
+    currentStep,
+    furthestStep,
+    totalSteps,
+    profile,
+    pages,
+    maxPages: MAX_PAGES,
+    posts,
+    products,
+    testimonials,
+    username,
+    isUsernameAvailable,
+    isCheckingUsername,
+    isPublishing,
+    publishError,
+    lastPublishedAt,
+    lastLocalEditAt,
+    lastSiteEditAt,
+    draftSourceUrl,
+    vibe,
+    accentOverride,
+    newsletterEnabled,
+    blogEnabled,
+    bookingsEnabled,
+    shopEnabled,
+    testimonialsEnabled,
+    blogTitle,
+    shopTitle,
+    blogPath,
+    shopPath,
+    testimonialsPlacement,
+    testimonialsTitle,
+    testimonialsPath,
+
+    // Computed
+    stepNames,
+    currentStepName,
+    canProceed,
+    needsPublish,
+
+    // Actions
+    nextStep,
+    prevStep,
+    goToStep,
+    updateProfile,
+    setFooter,
+    setNewsletter,
+    setBooking,
+    enableBookingType,
+    disableBookingType,
+    addBookingOffer,
+    updateBookingOffer,
+    removeBookingOffer,
+    addClassOffer,
+    updateClassOffer,
+    removeClassOffer,
+    addRetreatOffer,
+    updateRetreatOffer,
+    removeRetreatOffer,
+    setBookingAvailability,
+    setBookingPricing,
+    setPaidBookingOffersPricing,
+    setBookingOfferPricing,
+    setClassOfferPricing,
+    setRetreatOfferPricing,
+    setGift,
+    setLink,
+    removeLink,
+    setLinkOrder,
+    addButton,
+    updateButton,
+    removeButton,
+    setButtons,
+    addPage,
+    updatePage,
+    movePage,
+    removePage,
+    addPageImage,
+    removePageImage,
+    syncPageImages,
+    addPost,
+    updatePost,
+    removePost,
+    addPostImage,
+    removePostImage,
+    syncPostImages,
+    reorderPostImages,
+    addProduct,
+    updateProduct,
+    removeProduct,
+    addProductImage,
+    removeProductImage,
+    syncProductImages,
+    addTestimonial,
+    updateTestimonial,
+    removeTestimonial,
+    publishableTestimonials,
+    generateMe3Json,
+    saveToStorage,
+    loadFromStorage,
+    reconcileSession,
+    reset,
+    loadFromSiteContent,
+    setVibe,
+    setAccentOverride,
+    markAsPublished,
+  };
+});
+
+function getPublicApiBase(): string {
+  const configured = import.meta.env.VITE_PUBLIC_API_BASE || API_BASE;
+  if (/^https?:\/\//.test(configured)) return configured.replace(/\/$/, "");
+  const origin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "";
+  return `${origin}${configured}`.replace(/\/$/, "");
+}

@@ -5,9 +5,9 @@
   "description": "Installable ME3 Core assistant scaffold",
   "type": "module",
   "scripts": {
-    "dev": "pnpm --parallel --filter @me3-core/worker --filter @me3-core/web dev",
+    "dev": "pnpm --parallel --filter @me3-core/worker --filter @me3/web dev",
     "dev:worker": "pnpm --filter @me3-core/worker dev",
-    "dev:web": "pnpm --filter @me3-core/web dev",
+    "dev:web": "pnpm --filter @me3/web dev",
     "setup:dev-vars": "node scripts/create-dev-vars.mjs",
     "verify:local-boot": "node scripts/verify-local-boot.mjs",
     "build": "pnpm -r build",

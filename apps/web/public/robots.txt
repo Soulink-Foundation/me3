@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+Disallow: /home
+Disallow: /account
+Disallow: /sites/
+Disallow: /create
+Disallow: /login
+Disallow: /auth/
+
+Sitemap: https://me3.app/sitemap.xml

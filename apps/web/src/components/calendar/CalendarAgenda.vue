@@ -1,0 +1,732 @@
+<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+import type {
+  CalendarAgendaEvent,
+  CalendarAgendaSiteOption,
+  CalendarRangeMode,
+} from "./calendarAgenda";
+
+const props = withDefaults(
+  defineProps<{
+    events?: CalendarAgendaEvent[];
+    siteOptions?: CalendarAgendaSiteOption[];
+    loading?: boolean;
+    error?: string | null;
+    title?: string;
+    description?: string;
+    rangeLabel?: string;
+    timeZoneLabel?: string;
+    rangeMode?: CalendarRangeMode;
+    focusDayKey?: string | null;
+    preferSelectEventId?: string | null;
+    cancellingBookingId?: string | null;
+    /** Sidebar-style layout: detail panel only (feed hidden). */
+    variant?: "default" | "detail-only";
+    hideSiteFilter?: boolean;
+  }>(),
+  {
+    events: () => [],
+    siteOptions: () => [],
+    loading: false,
+    error: null,
+    title: "Upcoming bookings",
+    description: "Upcoming confirmed bookings, grouped by day in your local timezone.",
+    rangeLabel: "Month",
+    rangeMode: "month",
+    focusDayKey: null,
+    preferSelectEventId: null,
+    cancellingBookingId: null,
+    variant: "default",
+    hideSiteFilter: false,
+  },
+);
+const emit = defineEmits<{
+  (e: "event-action", event: CalendarAgendaEvent): void;
+  (e: "range-change", mode: CalendarRangeMode): void;
+  (e: "clear-focus"): void;
+  (e: "consumed-prefer-select"): void;
+  (e: "cancel-booking", event: CalendarAgendaEvent): void;
+}>();
+
+type CalendarDayGroup = {
+  key: string;
+  label: string;
+  items: CalendarAgendaEvent[];
+};
+
+const selectedSite = ref("all");
+const selectedEventId = ref("");
+const resolvedTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const timeZoneOptions = resolvedTimeZone ? { timeZone: resolvedTimeZone } : {};
+
+const sortedEvents = computed(() =>
+  [...props.events].sort(
+    (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime(),
+  ),
+);
+
+const filteredEvents = computed(() =>
+  selectedSite.value === "all"
+    ? sortedEvents.value
+    : sortedEvents.value.filter((event) => event.siteKey === selectedSite.value),
+);
+
+const dayKeyFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat("en-CA", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      ...timeZoneOptions,
+    }),
+);
+
+const focusFilteredEvents = computed(() => {
+  if (!props.focusDayKey) return filteredEvents.value;
+  return filteredEvents.value.filter((event) => {
+    const key = dayKeyFormatter.value.format(new Date(event.startsAt));
+    return key === props.focusDayKey;
+  });
+});
+
+const focusDayLabel = computed(() => {
+  if (!props.focusDayKey) return "";
+  const [y, m, d] = props.focusDayKey.split("-").map(Number);
+  if (!y || !m || !d) return props.focusDayKey;
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    ...timeZoneOptions,
+  }).format(new Date(y, m - 1, d));
+});
+
+const dayGroups = computed<CalendarDayGroup[]>(() => {
+  const dayLabelFormatter = new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    ...timeZoneOptions,
+  });
+
+  const groups = new Map<string, CalendarDayGroup>();
+
+  for (const event of focusFilteredEvents.value) {
+    const date = new Date(event.startsAt);
+    const key = dayKeyFormatter.value.format(date);
+    const label = dayLabelFormatter.format(date);
+    const existing = groups.get(key);
+
+    if (existing) {
+      existing.items.push(event);
+      continue;
+    }
+
+    groups.set(key, {
+      key,
+      label,
+      items: [event],
+    });
+  }
+
+  return Array.from(groups.values());
+});
+
+const selectedEvent = computed(() =>
+  focusFilteredEvents.value.find((event) => event.id === selectedEventId.value) ??
+  null,
+);
+
+const activeSiteLabel = computed(() => {
+  if (selectedSite.value === "all") return "all calendars";
+  return (
+    props.siteOptions.find((option) => option.value === selectedSite.value)
+      ?.label || "selected calendar"
+  );
+});
+
+const emptyMessage = computed(() => {
+  const range = props.rangeLabel.toLowerCase();
+  const focusHint = props.focusDayKey
+    ? ` on ${focusDayLabel.value}`
+    : "";
+  if (selectedSite.value === "all") {
+    return `No scheduled items in the ${range}${focusHint}.`;
+  }
+
+  return `No scheduled items for ${activeSiteLabel.value} in the ${range}${focusHint}.`;
+});
+
+function formatTime(value: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "numeric",
+    minute: "2-digit",
+    ...timeZoneOptions,
+  }).format(new Date(value));
+}
+
+function formatTimeRange(start: string, end: string, allDay = false) {
+  if (allDay) return "All day";
+  if (start === end) return formatTime(start);
+  return `${formatTime(start)} – ${formatTime(end)}`;
+}
+
+watch(
+  focusFilteredEvents,
+  (events) => {
+    if (events.length === 0) {
+      selectedEventId.value = "";
+      return;
+    }
+
+    if (!events.some((event) => event.id === selectedEventId.value)) {
+      selectedEventId.value = "";
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  [focusFilteredEvents, () => props.preferSelectEventId],
+  ([events, preferId]) => {
+    if (!preferId) return;
+    if (events.some((event) => event.id === preferId)) {
+      selectedEventId.value = preferId;
+      emit("consumed-prefer-select");
+    }
+  },
+  { immediate: true },
+);
+</script>
+
+<template>
+  <section
+    class="calendar-surface"
+    :class="{ 'calendar-surface--detail-only': variant === 'detail-only' }"
+  >
+    <div v-if="variant === 'default' && focusDayKey" class="calendar-focus-bar">
+      <span>Showing {{ focusDayLabel }}</span>
+      <button type="button" class="calendar-focus-clear" @click="emit('clear-focus')">
+        All days
+      </button>
+    </div>
+
+    <div v-if="loading" class="calendar-state">Loading calendar…</div>
+
+    <div v-else-if="error" class="calendar-state calendar-state--error">
+      {{ error }}
+    </div>
+
+    <div
+      v-else-if="variant === 'default' && focusFilteredEvents.length === 0"
+      class="calendar-empty"
+    >
+      <p>{{ emptyMessage }}</p>
+      <p v-if="siteOptions.length > 1" class="calendar-empty-hint">
+        Use the site filter above to switch context, or check back when more items arrive.
+      </p>
+    </div>
+
+    <div v-else-if="variant === 'detail-only' && selectedEvent" class="calendar-detail-solo-wrap">
+      <aside class="calendar-detail calendar-detail--solo">
+        <h4>{{ selectedEvent.title }}</h4>
+        <p class="calendar-detail-summary">{{ selectedEvent.summary }}</p>
+        <p class="calendar-detail-time">
+          {{
+            formatTimeRange(
+              selectedEvent.startsAt,
+              selectedEvent.endsAt,
+              selectedEvent.allDay,
+            )
+          }}
+        </p>
+        <p class="calendar-detail-site">{{ selectedEvent.siteLabel }}</p>
+
+        <dl class="calendar-detail-list">
+          <div
+            v-for="line in selectedEvent.detailLines"
+            :key="line.label"
+            class="calendar-detail-row"
+          >
+            <dt>{{ line.label }}</dt>
+            <dd>{{ line.value }}</dd>
+          </div>
+        </dl>
+
+        <button
+          v-if="selectedEvent.actionLabel"
+          type="button"
+          class="calendar-detail-action"
+          @click="emit('event-action', selectedEvent)"
+        >
+          {{ selectedEvent.actionLabel }}
+        </button>
+
+        <button
+          v-if="selectedEvent.sourceLabel === 'Booking'"
+          type="button"
+          class="calendar-detail-action calendar-detail-action--danger"
+          :disabled="cancellingBookingId === selectedEvent.id"
+          @click="emit('cancel-booking', selectedEvent)"
+        >
+          {{
+            cancellingBookingId === selectedEvent.id
+              ? "Cancelling…"
+              : "Cancel booking"
+          }}
+        </button>
+      </aside>
+    </div>
+
+    <div v-else-if="variant === 'default'" class="calendar-grid">
+      <div class="calendar-feed">
+        <div class="calendar-controls">
+          <label
+            v-if="!hideSiteFilter && siteOptions.length > 1"
+            class="calendar-select-wrap"
+          >
+            <select v-model="selectedSite" class="calendar-select">
+              <option value="all">All calendars</option>
+              <option
+                v-for="option in siteOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+
+        </div>
+
+        <div class="calendar-days">
+          <section v-for="group in dayGroups" :key="group.key" class="calendar-day">
+            <div class="calendar-day-head">
+              <h4>{{ group.label }}</h4>
+              <span>{{ group.items.length }} item{{ group.items.length === 1 ? "" : "s" }}</span>
+            </div>
+
+            <div class="calendar-items">
+              <button
+                v-for="event in group.items"
+                :key="event.id"
+                type="button"
+                class="calendar-item"
+                :class="{ 'is-active': selectedEventId === event.id }"
+                :aria-pressed="selectedEventId === event.id ? 'true' : 'false'"
+                @click="selectedEventId = event.id"
+              >
+                <div class="calendar-item-time">
+                  {{ formatTimeRange(event.startsAt, event.endsAt, event.allDay) }}
+                </div>
+                <div class="calendar-item-body">
+                  <div class="calendar-item-title">
+                    <span>{{ event.title }}</span>
+                    <span class="calendar-kind">{{ event.sourceLabel }}</span>
+                  </div>
+                  <div class="calendar-item-meta">
+                    {{ event.siteLabel }} · {{ event.summary }}
+                  </div>
+                </div>
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <aside v-if="selectedEvent" class="calendar-detail">
+        <template v-if="selectedEvent">
+          <h4>{{ selectedEvent.title }}</h4>
+          <p class="calendar-detail-summary">{{ selectedEvent.summary }}</p>
+          <p class="calendar-detail-time">
+            {{
+              formatTimeRange(
+                selectedEvent.startsAt,
+                selectedEvent.endsAt,
+                selectedEvent.allDay,
+              )
+            }}
+          </p>
+          <p class="calendar-detail-site">{{ selectedEvent.siteLabel }}</p>
+
+          <dl class="calendar-detail-list">
+            <div
+              v-for="line in selectedEvent.detailLines"
+              :key="line.label"
+              class="calendar-detail-row"
+            >
+              <dt>{{ line.label }}</dt>
+              <dd>{{ line.value }}</dd>
+            </div>
+          </dl>
+
+          <button
+            v-if="selectedEvent.actionLabel"
+            type="button"
+            class="calendar-detail-action"
+            @click="emit('event-action', selectedEvent)"
+          >
+            {{ selectedEvent.actionLabel }}
+          </button>
+
+          <button
+            v-if="selectedEvent.sourceLabel === 'Booking'"
+            type="button"
+            class="calendar-detail-action calendar-detail-action--danger"
+            :disabled="cancellingBookingId === selectedEvent.id"
+            @click="emit('cancel-booking', selectedEvent)"
+          >
+            {{
+              cancellingBookingId === selectedEvent.id
+                ? "Cancelling…"
+                : "Cancel booking"
+            }}
+          </button>
+        </template>
+
+      </aside>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.calendar-surface {
+  margin-bottom: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.calendar-surface--detail-only {
+  margin-bottom: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.calendar-detail-solo-wrap {
+  min-height: 280px;
+}
+
+.calendar-detail--solo {
+  height: 100%;
+  min-height: 520px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--cal-surface, var(--color-bg));
+}
+
+.calendar-focus-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-bg-subtle);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.calendar-focus-clear {
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.calendar-focus-clear:hover {
+  border-color: var(--color-border-strong);
+}
+
+.calendar-state,
+.calendar-empty,
+.calendar-detail-empty {
+  padding: 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+}
+
+.calendar-state--error {
+  color: #b33b2e;
+}
+
+.calendar-empty {
+  display: grid;
+  gap: 10px;
+}
+
+.calendar-empty-hint {
+  font-size: 13px;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.8fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.calendar-feed,
+.calendar-detail {
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.calendar-feed {
+  padding: 16px;
+}
+
+.calendar-detail {
+  padding: 16px;
+}
+
+.calendar-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.calendar-select-wrap {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+.calendar-select-label {
+  display: none;
+}
+
+.calendar-select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.calendar-days {
+  display: grid;
+  gap: 14px;
+}
+
+.calendar-day {
+  padding-top: 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.calendar-day:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.calendar-day-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.calendar-day-head h4 {
+  font-size: 16px;
+}
+
+.calendar-day-head span {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.calendar-items {
+  display: grid;
+  gap: 10px;
+}
+
+.calendar-item {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.calendar-item:hover {
+  background: var(--color-bg);
+}
+
+.calendar-item.is-active {
+  box-shadow: inset 0 0 0 1px var(--color-text);
+}
+
+.calendar-item-time {
+  flex: 0 0 92px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.calendar-item-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.calendar-item-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 600;
+}
+
+.calendar-kind {
+  flex-shrink: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.calendar-item-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.calendar-detail h4 {
+  margin-bottom: 6px;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.calendar-detail-summary {
+  margin-bottom: 14px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.calendar-detail-time {
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.calendar-detail-site {
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.calendar-detail-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.calendar-detail-row {
+  display: grid;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.calendar-detail-row dt {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.calendar-detail-row dd {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.calendar-notes {
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.calendar-notes h5 {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.calendar-notes p {
+  color: var(--color-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.calendar-detail-action {
+  margin-top: 14px;
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.calendar-detail-action--danger {
+  margin-top: 10px;
+}
+
+.calendar-detail-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 960px) {
+  .calendar-controls,
+  .calendar-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .calendar-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-feed {
+    padding: 0;
+  }
+
+  .calendar-item-time {
+    flex-basis: auto;
+  }
+}
+</style>

@@ -1,0 +1,871 @@
+<script setup lang="ts">
+import { definePage } from "unplugin-vue-router/runtime";
+import { computed, onMounted, ref } from "vue";
+import { useRouter, useRoute } from "vue-router";
+import { useWizardStore } from "../stores/wizard";
+import { useSitesStore } from "../stores/sites";
+import { usePublish } from "../composables/usePublish";
+import ProfilePreview from "../components/ProfilePreview.vue";
+
+// Step components
+import WizardBasics from "../components/wizard/WizardBasics.vue";
+import WizardAvatar from "../components/wizard/WizardAvatar.vue";
+import WizardBanner from "../components/wizard/WizardBanner.vue";
+import WizardLinks from "../components/wizard/WizardLinks.vue";
+import WizardCallToAction from "../components/wizard/WizardCallToAction.vue";
+import WizardPages from "../components/wizard/WizardPages.vue";
+import WizardAdditionalFeatures from "../components/wizard/WizardAdditionalFeatures.vue";
+import WizardNewsletter from "../components/wizard/WizardNewsletter.vue";
+import WizardBlog from "../components/wizard/WizardBlog.vue";
+import WizardBookings from "../components/wizard/WizardBookings.vue";
+import WizardShop from "../components/wizard/WizardShop.vue";
+import WizardTestimonials from "../components/wizard/WizardTestimonials.vue";
+import WizardPublish from "../components/wizard/WizardPublish.vue";
+
+definePage({
+  meta: {
+    requiresAuth: true,
+    title: "Site Wizard | ME3",
+    description:
+      "Create your me3 site in minutes with the step-by-step wizard.",
+    robots: "noindex,follow",
+  },
+});
+
+const router = useRouter();
+const route = useRoute();
+const wizard = useWizardStore();
+const sites = useSitesStore();
+const { isPublishing: isQuickPublishing, publish } = usePublish();
+const billingStatus = ref<Awaited<
+  ReturnType<typeof sites.getBillingStatus>
+> | null>(sites.billingStatusSnapshot);
+
+// Stripe Connect success message
+const stripeConnectSuccess = ref(false);
+
+// Reference to the current component instance
+const currentComponentRef = ref<
+  | InstanceType<typeof WizardPages>
+  | InstanceType<typeof WizardBlog>
+  | InstanceType<typeof WizardShop>
+  | InstanceType<typeof WizardBookings>
+  | null
+>(null);
+
+// Step components map
+const canUseNewsletter = computed(
+  () => billingStatus.value?.capabilities.newsletterSignup === true,
+);
+const canUseBookings = computed(
+  () => billingStatus.value?.capabilities.bookingsEnabled === true,
+);
+
+const stepComponents = computed(() => {
+  const base = [
+    WizardBasics,
+    WizardAvatar,
+    WizardBanner,
+    WizardLinks,
+    WizardCallToAction,
+    WizardPages,
+    WizardAdditionalFeatures,
+  ];
+
+  // Add conditional steps in order: Newsletter, Bookings, Blog, Offerings, Testimonials
+  if (wizard.newsletterEnabled && canUseNewsletter.value) {
+    base.push(WizardNewsletter);
+  }
+  if (wizard.bookingsEnabled && canUseBookings.value) {
+    base.push(WizardBookings);
+  }
+  if (wizard.blogEnabled) base.push(WizardBlog);
+  base.push(WizardShop);
+  if (wizard.testimonialsEnabled) base.push(WizardTestimonials);
+
+  base.push(WizardPublish);
+  return base;
+});
+
+const currentComponent = computed(
+  () => stepComponents.value[wizard.currentStep - 1],
+);
+
+const previewActiveView = computed(() => {
+  if (currentComponent.value === WizardBlog) {
+    const blogRef = currentComponentRef.value as InstanceType<
+      typeof WizardBlog
+    > | null;
+    if (blogRef?.activePostSlug) {
+      return `${wizard.blogPath}:${blogRef.activePostSlug}`;
+    }
+    return wizard.blogPath;
+  }
+  if (currentComponent.value === WizardTestimonials) {
+    if (wizard.testimonialsPlacement === "standalone") {
+      return wizard.testimonialsPath;
+    }
+    if (wizard.testimonialsPlacement === "blog") {
+      return wizard.blogPath;
+    }
+    if (wizard.testimonialsPlacement === "shop") {
+      return wizard.shopPath;
+    }
+    if (wizard.testimonialsPlacement.startsWith("page:")) {
+      return wizard.testimonialsPlacement.slice("page:".length) || null;
+    }
+  }
+  return null;
+});
+
+const importedDraftHost = computed(() => {
+  const sourceUrl = wizard.draftSourceUrl;
+  if (!sourceUrl) return null;
+
+  try {
+    return new URL(sourceUrl).hostname.replace(/^www\./, "");
+  } catch {
+    return sourceUrl;
+  }
+});
+
+const showImportedDraftRecovery = computed(
+  () => !!importedDraftHost.value && !wizard.lastPublishedAt,
+);
+
+// Progress percentage
+const progress = computed(
+  () => ((wizard.currentStep - 1) / (wizard.totalSteps - 1)) * 100,
+);
+
+const progressSteps = computed(() =>
+  wizard.stepNames.map((name, index) => {
+    const number = index + 1;
+    const isCurrent = number === wizard.currentStep;
+    const isVisited = number <= wizard.furthestStep;
+
+    return {
+      name,
+      number,
+      isCurrent,
+      isVisited,
+      isJumpable: isVisited && !isCurrent,
+      title: isCurrent
+        ? `${name} (current step)`
+        : isVisited
+          ? `Go to ${name}`
+          : `${name} is locked until you complete the earlier steps`,
+      ariaLabel: isCurrent
+        ? `Current step: ${name}`
+        : isVisited
+          ? `Go to ${name}`
+          : `${name} is locked until you complete the earlier steps`,
+    };
+  }),
+);
+
+// Show preview on larger screens
+const showPreview = computed(() => wizard.currentStep < wizard.totalSteps);
+
+// Check if WizardPages/Blog/Offerings/Bookings is in editing mode
+const isEditingPage = computed(() => {
+  if (!currentComponentRef.value) return false;
+
+  if (currentComponent.value === WizardPages) {
+    return (currentComponentRef.value as InstanceType<typeof WizardPages>)
+      .isEditingPage;
+  }
+  if (currentComponent.value === WizardBlog) {
+    return (currentComponentRef.value as InstanceType<typeof WizardBlog>)
+      .isEditingPost;
+  }
+  if (currentComponent.value === WizardShop) {
+    return (currentComponentRef.value as InstanceType<typeof WizardShop>)
+      .isEditingProduct;
+  }
+
+  return false;
+});
+
+function handleBack() {
+  if (wizard.currentStep === 1) {
+    router.push("/");
+  } else {
+    wizard.prevStep();
+  }
+}
+
+function handleNext() {
+  wizard.nextStep();
+}
+
+function handleStepJump(step: number) {
+  wizard.goToStep(step);
+}
+
+function handleProgressStepClick(stepNumber: number, isVisited: boolean) {
+  if (!isVisited) return;
+  handleStepJump(stepNumber);
+}
+
+function exitWizardDestination(): string {
+  const site = (wizard.username || wizard.profile.handle || "")
+    .trim()
+    .toLowerCase();
+  if (site.length >= 3) return `/sites/${site}`;
+  return "/home";
+}
+
+function handleExit() {
+  router.push(exitWizardDestination());
+}
+
+async function handleQuickPublish() {
+  await publish({ openSite: false });
+}
+
+function clearImportedDraft() {
+  wizard.reset();
+  router.push("/home");
+}
+
+onMounted(() => {
+  // Check for saved progress
+  if (wizard.profile.name && wizard.currentStep > 1) {
+    // Show continue prompt could go here
+  }
+
+  // Check for Stripe Connect success
+  if (route.query.stripe_connect === "success") {
+    stripeConnectSuccess.value = true;
+    // Clear the query param
+    router.replace({ query: {} });
+    // Refresh the status after a short delay to let Stripe update
+    setTimeout(() => {
+      window.location.reload();
+    }, 2000);
+  }
+
+  if (!billingStatus.value) {
+    void sites.getBillingStatus().then((status) => {
+      billingStatus.value = status;
+    });
+  }
+});
+</script>
+
+<template>
+  <div class="wizard-page">
+    <!-- Stripe Connect Success Banner -->
+    <div v-if="stripeConnectSuccess" class="stripe-success-banner">
+      <span class="success-icon">✓</span>
+      <span class="success-text"
+        >Stripe connected successfully! Refreshing...</span
+      >
+    </div>
+
+    <!-- Header -->
+    <header class="wizard-header">
+      <div class="header-center">
+        <div class="step-indicator">
+          <span class="step-current">{{ wizard.currentStep }}</span>
+          <span class="step-divider">/</span>
+          <span class="step-total">{{ wizard.totalSteps }}</span>
+          <span class="step-name">{{ wizard.currentStepName }}</span>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <button
+          class="exit-btn"
+          @click="handleExit"
+          :title="
+            (wizard.username || wizard.profile.handle || '').trim().length >= 3
+              ? 'Back to site'
+              : 'Back to dashboard'
+          "
+        >
+          Exit
+        </button>
+      </div>
+    </header>
+
+    <!-- Progress bar -->
+    <div class="progress-bar" role="navigation" aria-label="Wizard progress">
+      <div class="progress-track" aria-hidden="true">
+        <div class="progress-fill" :style="{ width: `${progress}%` }" />
+      </div>
+
+      <div
+        class="progress-steps"
+        :style="{
+          gridTemplateColumns: `repeat(${wizard.totalSteps}, minmax(0, 1fr))`,
+        }"
+      >
+        <button
+          v-for="step in progressSteps"
+          :key="step.name"
+          type="button"
+          class="progress-step"
+          :class="{
+            'is-current': step.isCurrent,
+            'is-visited': step.isVisited,
+            'is-jumpable': step.isJumpable,
+          }"
+          :data-step-name="step.name"
+          :aria-label="step.ariaLabel"
+          :aria-current="step.isCurrent ? 'step' : undefined"
+          :aria-disabled="step.isVisited ? undefined : 'true'"
+          :tabindex="step.isVisited ? undefined : -1"
+          @click="handleProgressStepClick(step.number, step.isVisited)"
+        >
+          <span class="progress-step-dot" aria-hidden="true">
+            <span v-if="step.isCurrent" class="progress-step-core" />
+            <span v-else-if="step.isVisited" class="progress-step-check"
+              >✓</span
+            >
+          </span>
+          <span class="progress-step-tooltip" aria-hidden="true">
+            {{ step.name }}
+          </span>
+        </button>
+      </div>
+
+      <div v-if="showImportedDraftRecovery" class="draft-recovery-banner">
+        <div class="draft-recovery-copy">
+          <strong>Imported draft saved locally.</strong>
+          <span>
+            We imported your site from
+            {{ importedDraftHost }}. You can publish, keep editing or start
+            over.
+          </span>
+        </div>
+        <button
+          class="draft-recovery-button"
+          type="button"
+          @click="clearImportedDraft"
+        >
+          Start over
+        </button>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <main class="wizard-main">
+      <!-- Step content -->
+      <div
+        class="step-content"
+        :class="{ 'publish-step': wizard.currentStep === wizard.totalSteps }"
+      >
+        <component :is="currentComponent" ref="currentComponentRef" />
+
+        <!-- Navigation -->
+        <div v-if="!isEditingPage" class="step-nav">
+          <button class="nav-btn back" @click="handleBack">
+            {{ wizard.currentStep === 1 ? "← Exit" : "← Back" }}
+          </button>
+
+          <div class="nav-actions-right">
+            <!-- Quick Publish button - only for existing sites with unpublished changes -->
+            <button
+              v-if="
+                wizard.lastPublishedAt &&
+                wizard.needsPublish &&
+                wizard.currentStep < wizard.totalSteps
+              "
+              class="nav-btn publish-quick"
+              :disabled="isQuickPublishing"
+              @click="handleQuickPublish"
+            >
+              {{ isQuickPublishing ? "Publishing..." : "Publish" }}
+            </button>
+
+            <button
+              v-if="wizard.currentStep < wizard.totalSteps"
+              class="nav-btn next"
+              :disabled="!wizard.canProceed"
+              @click="handleNext"
+            >
+              {{
+                wizard.currentStep === wizard.totalSteps - 1
+                  ? "Review →"
+                  : "Next →"
+              }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Preview panel -->
+      <div v-if="showPreview" class="preview-panel">
+        <ProfilePreview
+          :profile="wizard.profile"
+          :pages="wizard.pages"
+          :posts="wizard.posts"
+          :products="wizard.products"
+          :testimonials="wizard.testimonials"
+          :blogEnabled="wizard.blogEnabled"
+          :blogTitle="wizard.blogTitle"
+          :shopEnabled="wizard.shopEnabled"
+          :shopTitle="wizard.shopTitle"
+          :testimonialsEnabled="wizard.testimonialsEnabled"
+          :testimonialsPlacement="wizard.testimonialsPlacement"
+          :testimonialsTitle="wizard.testimonialsTitle"
+          :vibe="wizard.vibe"
+          :activeView="previewActiveView || undefined"
+          compact
+        />
+      </div>
+    </main>
+  </div>
+</template>
+
+<style scoped>
+.wizard-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header */
+.wizard-header {
+  display: grid;
+  grid-template-columns: 1fr minmax(0, auto) 1fr;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.header-center {
+  grid-column: 2;
+  justify-self: center;
+  display: flex;
+  justify-content: center;
+}
+
+.header-right {
+  grid-column: 3;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  color: var(--color-text);
+}
+
+.logo-img {
+  display: block;
+  height: 28px;
+  width: auto;
+}
+
+.step-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.step-current {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.step-divider,
+.step-total {
+  color: var(--color-text-muted);
+}
+
+.step-name {
+  color: var(--color-text-muted);
+  margin-left: 8px;
+}
+
+.exit-btn {
+  background: var(--color-border);
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 999px;
+  margin-right: 4px;
+}
+
+.exit-btn:hover {
+  background: var(--color-text-muted);
+  color: var(--color-bg);
+}
+
+/* Progress bar */
+.progress-bar {
+  position: relative;
+  padding: 10px 24px 6px;
+}
+
+.progress-track {
+  position: absolute;
+  left: 40px;
+  right: 40px;
+  top: 31px;
+  height: 3px;
+  background: var(--color-border);
+  border-radius: 999px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--color-text);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.progress-steps {
+  position: relative;
+  display: grid;
+  align-items: center;
+}
+
+.progress-step {
+  position: relative;
+  min-height: 44px;
+  padding: 8px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.progress-step.is-jumpable {
+  cursor: pointer;
+}
+
+.progress-step[aria-disabled="true"] {
+  cursor: default;
+}
+
+.progress-step-dot {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  background: var(--color-bg);
+  transition:
+    transform 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.progress-step.is-visited .progress-step-dot {
+  color: var(--color-text);
+}
+
+.progress-step.is-visited:not(.is-current) .progress-step-dot {
+  background: var(--color-text);
+  color: var(--color-bg);
+  border-color: var(--color-text);
+}
+
+.progress-step.is-current .progress-step-dot {
+  width: 22px;
+  height: 22px;
+  border-color: var(--color-text);
+  color: var(--color-text);
+  box-shadow: 0 0 0 4px var(--color-border);
+}
+
+.progress-step.is-jumpable:hover .progress-step-dot {
+  transform: translateY(-1px);
+}
+
+.progress-step:focus-visible {
+  outline: none;
+}
+
+.progress-step:focus-visible .progress-step-dot {
+  box-shadow: 0 0 0 4px var(--color-border);
+}
+
+.progress-step-tooltip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translate(-50%, 8px);
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--color-text);
+  color: var(--color-bg);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+  z-index: 2;
+}
+
+.progress-step-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(100% - 2px);
+  width: 8px;
+  height: 8px;
+  background: var(--color-text);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.progress-step:hover .progress-step-tooltip,
+.progress-step:focus-visible .progress-step-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.progress-step-core {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.progress-step-check {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Main */
+.wizard-main {
+  flex: 1;
+  display: flex;
+  gap: 20px;
+  padding: 40px;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.step-content {
+  flex: 1;
+  display: flex;
+  max-width: 680px;
+  flex-direction: column;
+}
+
+.step-content.publish-step {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.step-nav {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 40px;
+}
+
+.step-content.publish-step .step-nav {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.nav-btn {
+  padding: 14px 28px;
+  font-size: 15px;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.nav-btn.back {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.nav-btn.back:hover {
+  background: var(--color-text-muted);
+  color: var(--color-bg);
+}
+
+.nav-btn.next {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+.nav-btn.next:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.nav-actions-right {
+  display: flex;
+  gap: 12px;
+}
+
+.nav-btn.publish-quick {
+  background: transparent;
+  border: 2px solid var(--color-text);
+  color: var(--color-text);
+}
+
+.nav-btn.publish-quick:hover:not(:disabled) {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+/* Preview panel */
+.preview-panel {
+  flex-shrink: 0;
+  position: sticky;
+  top: 40px;
+  align-self: flex-start;
+  margin: 0 auto;
+  width: 400px;
+}
+
+/* Draft recovery banner */
+.draft-recovery-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin: 16px 24px 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--color-text);
+}
+
+.draft-recovery-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.draft-recovery-copy strong {
+  font-size: 14px;
+}
+
+.draft-recovery-button {
+  flex-shrink: 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 10px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.draft-recovery-button:hover {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+/* Stripe Connect Success Banner */
+.stripe-success-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: #22c55e;
+  color: white;
+  padding: 12px 24px;
+  text-align: center;
+  font-weight: 500;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.success-icon {
+  font-size: 18px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .wizard-main {
+    flex-direction: column;
+    padding: 24px;
+  }
+
+  .step-content {
+    max-width: 100%;
+  }
+
+  .preview-panel {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .wizard-header {
+    padding: 14px 16px;
+  }
+
+  .step-indicator {
+    font-size: 13px;
+  }
+
+  .step-name {
+    display: none;
+  }
+
+  .progress-bar {
+    padding: 8px 14px 4px;
+  }
+
+  .progress-track {
+    left: 26px;
+    right: 26px;
+    top: 27px;
+  }
+
+  .progress-step-dot {
+    width: 16px;
+    height: 16px;
+  }
+
+  .progress-step.is-current .progress-step-dot {
+    width: 20px;
+    height: 20px;
+  }
+
+  .progress-step-tooltip {
+    display: none;
+  }
+}
+</style>
