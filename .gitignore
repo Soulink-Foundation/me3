@@ -29,3 +29,7 @@ Thumbs.db
 coverage/
 test-results/
 playwright-report/
+
+# Local-only repository metadata
+.gitattributes
+AGENTS.md
