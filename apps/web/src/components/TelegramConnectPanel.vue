@@ -295,6 +295,15 @@ defineExpose({
         {{ statusHint }}
       </p>
 
+      <div v-if="variant === 'default'" class="telegram-operator-note">
+        <strong>Standalone Core installs need their own Telegram bot.</strong>
+        <p>
+          Create one with Telegram BotFather, then configure this ME3 Core
+          deployment with that bot username. Keep the bot token in local or
+          Cloudflare secrets, not in source control.
+        </p>
+      </div>
+
       <div v-if="configured" class="telegram-qr-section">
         <dl
           v-if="connectionDetails.length"
@@ -423,6 +432,26 @@ defineExpose({
   font-size: 14px;
   line-height: 1.45;
   color: var(--color-text-muted);
+}
+
+.telegram-operator-note {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted, rgba(0, 0, 0, 0.03));
+}
+
+.telegram-operator-note strong {
+  display: block;
+  font-size: 14px;
+}
+
+.telegram-operator-note p {
+  margin: 6px 0 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .telegram-qr-section {
