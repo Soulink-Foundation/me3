@@ -9,9 +9,11 @@ type StoredMessage = {
   content: string;
 };
 
-function createEnv(): Env & { owner: OwnerProfile | null; messages: StoredMessage[] } {
+type StoredOwner = OwnerProfile & { password_hash: string | null };
+
+function createEnv(): Env & { owner: StoredOwner | null; messages: StoredMessage[] } {
   const state = {
-    owner: null as OwnerProfile | null,
+    owner: null as StoredOwner | null,
     messages: [] as StoredMessage[],
   };
 
@@ -30,6 +32,7 @@ function createEnv(): Env & { owner: OwnerProfile | null; messages: StoredMessag
                   bio: values[4] as string | null,
                   avatar_url: values[5] as string | null,
                   timezone: values[6] as string | null,
+                  password_hash: values[7] as string | null,
                 };
               }
 
@@ -45,6 +48,14 @@ function createEnv(): Env & { owner: OwnerProfile | null; messages: StoredMessag
               return { success: true };
             },
             async first<T>() {
+              if (sql.includes("SELECT password_hash FROM owner_profile")) {
+                return state.owner ? ({ password_hash: state.owner.password_hash } as T) : null;
+              }
+
+              if (sql.includes("lower(email)") && String(values[0]) === state.owner?.email?.toLowerCase()) {
+                return state.owner as T;
+              }
+
               if (sql.includes("FROM owner_profile") && values[0] === state.owner?.id) {
                 return state.owner as T;
               }
@@ -78,6 +89,7 @@ async function bootstrap(env: Env) {
         email: "owner@example.com",
         name: "ME3 Core Owner",
         username: "owner",
+        password: "correct-horse-battery",
       }),
     }),
     env,
@@ -105,6 +117,22 @@ describe("ME3 Core Worker auth", () => {
     expect(response.headers.get("set-cookie")).toContain("me3_core_session=");
   });
 
+  it("reports whether owner password auth is configured", async () => {
+    const env = createEnv();
+
+    const before = await app.fetch(new Request("http://localhost/api/config"), env);
+    expect((await before.json()) as { ownerAuthConfigured: boolean }).toMatchObject({
+      ownerAuthConfigured: false,
+    });
+
+    await bootstrap(env);
+
+    const after = await app.fetch(new Request("http://localhost/api/config"), env);
+    expect((await after.json()) as { ownerAuthConfigured: boolean }).toMatchObject({
+      ownerAuthConfigured: true,
+    });
+  });
+
   it("rejects invalid bootstrap codes without issuing a session", async () => {
     const env = createEnv();
 
@@ -113,6 +141,72 @@ describe("ME3 Core Worker auth", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ bootstrapCode: "wrong" }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("requires a password during bootstrap", async () => {
+    const env = createEnv();
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/admin/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bootstrapCode: "owner-code",
+          email: "owner@example.com",
+          name: "ME3 Core Owner",
+          username: "owner",
+          password: "short",
+        }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("logs in the owner with email and password", async () => {
+    const env = createEnv();
+    await bootstrap(env);
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "owner@example.com",
+          password: "correct-horse-battery",
+        }),
+      }),
+      env,
+    );
+    const body = (await response.json()) as { ok: boolean; owner: OwnerProfile & { password_hash?: string } };
+
+    expect(response.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.owner.id).toBe("owner");
+    expect(body.owner.password_hash).toBeUndefined();
+    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
+  });
+
+  it("rejects invalid owner passwords", async () => {
+    const env = createEnv();
+    await bootstrap(env);
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "owner@example.com",
+          password: "wrong-password",
+        }),
       }),
       env,
     );

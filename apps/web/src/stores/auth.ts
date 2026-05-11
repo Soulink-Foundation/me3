@@ -25,6 +25,12 @@ export interface BootstrapOwnerInput {
   email?: string;
   name: string;
   username: string;
+  password: string;
+}
+
+export interface LoginOwnerInput {
+  email: string;
+  password: string;
 }
 
 const STORAGE_KEY = "me3_core_owner_session";
@@ -98,6 +104,7 @@ export const useAuthStore = defineStore("auth", () => {
           email: input.email?.trim() || undefined,
           name: input.name.trim(),
           username: input.username.trim(),
+          password: input.password,
         },
       );
 
@@ -106,6 +113,25 @@ export const useAuthStore = defineStore("auth", () => {
       return true;
     } catch (error) {
       console.error("Bootstrap owner error:", error);
+      return false;
+    }
+  }
+
+  async function loginOwner(input: LoginOwnerInput): Promise<boolean> {
+    try {
+      const response = await api.post<{ ok: boolean; owner: OwnerProfile }>(
+        "/auth/login",
+        {
+          email: input.email.trim(),
+          password: input.password,
+        },
+      );
+
+      if (!response.ok) return false;
+      setSession(ownerToUser(response.owner));
+      return true;
+    } catch (error) {
+      console.error("Login owner error:", error);
       return false;
     }
   }
@@ -129,6 +155,7 @@ export const useAuthStore = defineStore("auth", () => {
     ensureInitialized,
     refreshSession,
     bootstrapOwner,
+    loginOwner,
     logout,
     setSession,
   };

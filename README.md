@@ -14,7 +14,7 @@ This repository is intentionally small at first. It is not a raw split of `me3-a
 - Vue web shell for local admin/bootstrap and setup-required states.
 - Minimal D1 schema for install metadata, owner profile, and assistant messages.
 - Example install config with no ME3 Cloud production domains, IDs, routes, or secrets.
-- Simple provider-free owner auth: bootstrap code in, httpOnly signed session cookie out.
+- Simple provider-free owner auth: bootstrap code claims the install, password login opens the workspace, and httpOnly signed session cookies keep the owner signed in.
 
 ## Boundaries
 
@@ -46,7 +46,7 @@ ME3 Core uses a local-first owner bootstrap flow so an install can come up witho
 
 Required owner auth secrets:
 
-- `ADMIN_BOOTSTRAP_CODE` unlocks first-run setup and owner profile updates.
+- `ADMIN_BOOTSTRAP_CODE` unlocks first-run setup and owner credential recovery.
 - `JWT_SECRET` signs the owner session cookie.
 - `TOKEN_ENCRYPTION_KEY` is reserved for encrypted owner/provider tokens.
 
@@ -59,7 +59,9 @@ pnpm --filter @me3-core/worker dev
 pnpm --filter @me3/web dev
 ```
 
-Open the web app, enter the generated `ADMIN_BOOTSTRAP_CODE`, and create the owner profile. A successful bootstrap sets an httpOnly `me3_core_session` cookie. The web app hydrates refreshes from `/api/auth/me` and logs out through `/api/auth/logout`; it does not trust localStorage for authentication.
+Open the web app, enter the generated `ADMIN_BOOTSTRAP_CODE`, and create the owner profile with an email and password. A successful bootstrap stores a password hash in D1 and sets an httpOnly `me3_core_session` cookie. Returning owners sign in with email and password through `/api/auth/login`; the bootstrap code is kept for install-claim and recovery, not everyday login.
+
+The web app reads `/api/config` to decide whether owner password auth is configured, hydrates refreshes from `/api/auth/me`, and logs out through `/api/auth/logout`; it does not trust localStorage for authentication.
 
 Owner-only Worker routes, including `/api/assistant/chat`, require a valid server-verified session. Public install routes such as `/health`, `/api/config`, and `/.well-known/me.json` remain unauthenticated.
 

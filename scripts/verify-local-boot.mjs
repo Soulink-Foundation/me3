@@ -57,12 +57,14 @@ async function main() {
   assert(typeof config.apiOrigin === "string", "Core API origin missing");
 
   const bootstrapCode = readDevVar("ADMIN_BOOTSTRAP_CODE");
+  const ownerPassword = "local-boot-password";
   const bootstrapResponse = await postJson(`${workerOrigin}/api/admin/bootstrap`, {
     bootstrapCode,
     email: "owner@example.test",
     name: "ME3 Core Owner",
     username: "owner",
     bio: "Local boot verification owner.",
+    password: ownerPassword,
   });
   const bootstrap = bootstrapResponse.body;
   assert(bootstrap.ok === true, "Admin bootstrap failed");
@@ -71,6 +73,13 @@ async function main() {
 
   const me = await fetchJson(`${workerOrigin}/api/auth/me`, sessionCookie);
   assert(me.ok === true && me.user?.id === "owner", "Auth session hydration failed");
+
+  const loginResponse = await postJson(`${workerOrigin}/api/auth/login`, {
+    email: "owner@example.test",
+    password: ownerPassword,
+  });
+  assert(loginResponse.body.ok === true, "Password login failed");
+  assert(loginResponse.cookie, "Password login did not set a session cookie");
 
   const chat = (
     await postJson(

@@ -6,12 +6,16 @@ import type { Env, OwnerProfile } from "./types";
 
 export { Me3UserAgent };
 
-type BootstrapBody = Partial<OwnerProfile> & { bootstrapCode?: string };
+type BootstrapBody = Partial<OwnerProfile> & { bootstrapCode?: string; password?: string };
+type LoginBody = { email?: string; password?: string };
 type ChatBody = { message?: string };
 type SessionPayload = { sub: string; iat: number; exp: number };
+type OwnerRecord = OwnerProfile & { password_hash: string | null };
 
 const SESSION_COOKIE_NAME = "me3_core_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+const PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256";
+const PASSWORD_HASH_ITERATIONS = 210_000;
 
 const app = new Hono<{ Bindings: Env }>();
 type AppContext = Context<{ Bindings: Env }>;
@@ -40,7 +44,9 @@ app.get("/health", (c) => {
   });
 });
 
-app.get("/api/config", (c) => {
+app.get("/api/config", async (c) => {
+  const authConfigured = await getOwnerAuthConfigured(c.env);
+
   return c.json({
     apiOrigin: c.env.CORE_API_ORIGIN,
     webOrigin: c.env.CORE_WEB_ORIGIN,
@@ -51,6 +57,7 @@ app.get("/api/config", (c) => {
       chatModel: c.env.ME3_AI_CHAT_MODEL ?? "not-configured",
     },
     setupRequired: getSetupRequired(c.env),
+    ownerAuthConfigured: authConfigured,
   });
 });
 
@@ -65,9 +72,20 @@ app.post("/api/admin/bootstrap", async (c) => {
     return c.json({ ok: false, error: "Invalid bootstrap code" }, 401);
   }
 
+  const password = body.password?.trim();
+  if (!password || password.length < 8) {
+    return c.json({ ok: false, error: "Password must be at least 8 characters" }, 400);
+  }
+
+  const email = body.email?.trim() || null;
+  if (!email) {
+    return c.json({ ok: false, error: "Email is required" }, 400);
+  }
+
+  const passwordHash = await hashPassword(password);
   const owner: OwnerProfile = {
     id: "owner",
-    email: body.email ?? null,
+    email,
     name: body.name ?? "ME3 Core Owner",
     username: body.username ?? "owner",
     bio: body.bio ?? "Personal AI assistant powered by ME3 Core.",
@@ -76,8 +94,8 @@ app.post("/api/admin/bootstrap", async (c) => {
   };
 
   await c.env.DB.prepare(
-    `INSERT INTO owner_profile (id, email, name, username, bio, avatar_url, timezone, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `INSERT INTO owner_profile (id, email, name, username, bio, avatar_url, timezone, password_hash, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(id) DO UPDATE SET
        email = excluded.email,
        name = excluded.name,
@@ -85,14 +103,34 @@ app.post("/api/admin/bootstrap", async (c) => {
        bio = excluded.bio,
        avatar_url = excluded.avatar_url,
        timezone = excluded.timezone,
+       password_hash = excluded.password_hash,
        updated_at = CURRENT_TIMESTAMP`,
   )
-    .bind(owner.id, owner.email, owner.name, owner.username, owner.bio, owner.avatar_url, owner.timezone)
+    .bind(owner.id, owner.email, owner.name, owner.username, owner.bio, owner.avatar_url, owner.timezone, passwordHash)
     .run();
 
   await setOwnerSession(c, owner.id);
 
   return c.json({ ok: true, owner });
+});
+
+app.post("/api/auth/login", async (c) => {
+  const body = await c.req.json<LoginBody>().catch((): LoginBody => ({}));
+  const email = body.email?.trim().toLowerCase();
+  const password = body.password?.trim();
+
+  if (!email || !password) {
+    return c.json({ ok: false, error: "Email and password are required" }, 400);
+  }
+
+  const owner = await getOwnerByEmail(c.env, email);
+  if (!owner?.password_hash || !(await verifyPassword(password, owner.password_hash))) {
+    return c.json({ ok: false, error: "Invalid email or password" }, 401);
+  }
+
+  await setOwnerSession(c, owner.id);
+
+  return c.json({ ok: true, owner: toPublicOwner(owner) });
 });
 
 app.get("/api/auth/me", async (c) => {
@@ -107,7 +145,7 @@ app.get("/api/auth/me", async (c) => {
     return c.json({ ok: false, user: null }, 401);
   }
 
-  return c.json({ ok: true, user: owner });
+  return c.json({ ok: true, user: toPublicOwner(owner) });
 });
 
 app.post("/api/auth/logout", (c) => {
@@ -158,14 +196,46 @@ app.get("/.well-known/me.json", async (c) => {
   });
 });
 
-async function getOwnerProfile(env: Env, ownerId: string): Promise<OwnerProfile | null> {
+async function getOwnerProfile(env: Env, ownerId: string): Promise<OwnerRecord | null> {
   const result = await env.DB.prepare(
-    "SELECT id, email, name, username, bio, avatar_url, timezone FROM owner_profile WHERE id = ?",
+    "SELECT id, email, name, username, bio, avatar_url, timezone, password_hash FROM owner_profile WHERE id = ?",
   )
     .bind(ownerId)
-    .first<OwnerProfile>();
+    .first<OwnerRecord>();
 
   return result ?? null;
+}
+
+async function getOwnerByEmail(env: Env, email: string): Promise<OwnerRecord | null> {
+  const result = await env.DB.prepare(
+    "SELECT id, email, name, username, bio, avatar_url, timezone, password_hash FROM owner_profile WHERE lower(email) = ?",
+  )
+    .bind(email)
+    .first<OwnerRecord>();
+
+  return result ?? null;
+}
+
+async function getOwnerAuthConfigured(env: Env): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "SELECT password_hash FROM owner_profile WHERE id = ?",
+  )
+    .bind("owner")
+    .first<{ password_hash: string | null }>();
+
+  return Boolean(result?.password_hash);
+}
+
+function toPublicOwner(owner: OwnerRecord): OwnerProfile {
+  return {
+    id: owner.id,
+    email: owner.email,
+    name: owner.name,
+    username: owner.username,
+    bio: owner.bio,
+    avatar_url: owner.avatar_url,
+    timezone: owner.timezone,
+  };
 }
 
 async function setOwnerSession(c: AppContext, ownerId: string) {
@@ -254,6 +324,64 @@ async function hmacSha256(data: string, secret: string): Promise<ArrayBuffer> {
   return crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
 }
 
+async function hashPassword(password: string): Promise<string> {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const hash = await derivePasswordHash(password, salt, PASSWORD_HASH_ITERATIONS);
+
+  return [
+    PASSWORD_HASH_ALGORITHM,
+    String(PASSWORD_HASH_ITERATIONS),
+    encodeBase64Url(salt),
+    encodeBase64Url(hash),
+  ].join("$");
+}
+
+async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
+  const [algorithm, rawIterations, rawSalt, expectedHash] = storedHash.split("$");
+  const iterations = Number(rawIterations);
+
+  if (algorithm !== PASSWORD_HASH_ALGORITHM || !Number.isInteger(iterations) || iterations <= 0) {
+    return false;
+  }
+
+  try {
+    const salt = decodeBase64UrlBytes(rawSalt);
+    const actualHash = encodeBase64Url(await derivePasswordHash(password, salt, iterations));
+    return constantTimeEqual(actualHash, expectedHash);
+  } catch {
+    return false;
+  }
+}
+
+async function derivePasswordHash(
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
+): Promise<ArrayBuffer> {
+  const saltBuffer = new ArrayBuffer(salt.byteLength);
+  new Uint8Array(saltBuffer).set(salt);
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+
+  return crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: saltBuffer,
+      iterations,
+    },
+    key,
+    256,
+  );
+}
+
 function encodeBase64UrlJson(value: unknown): string {
   return encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
 }
@@ -266,10 +394,13 @@ function encodeBase64Url(value: ArrayBuffer | Uint8Array): string {
 }
 
 function decodeBase64Url(value: string): string {
+  return new TextDecoder().decode(decodeBase64UrlBytes(value));
+}
+
+function decodeBase64UrlBytes(value: string): Uint8Array {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
   const binary = atob(base64);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

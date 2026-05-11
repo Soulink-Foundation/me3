@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { definePage } from "unplugin-vue-router/runtime";
 import { useRouter, useRoute } from "vue-router";
 import BrandLogo from "../components/BrandLogo.vue";
+import { api } from "../api";
 import { useAuthStore } from "../stores/auth";
 import { DEFAULT_APP_PATH } from "../utils/navigation";
 
@@ -25,15 +26,27 @@ const auth = useAuthStore();
 const email = ref("");
 const name = ref("");
 const bootstrapCode = ref("");
+const password = ref("");
 const loading = ref(false);
+const configLoading = ref(true);
+const ownerAuthConfigured = ref(false);
 const error = ref("");
 
+const isSetupMode = computed(() => !ownerAuthConfigured.value);
+
 const canSubmit = computed(
-  () =>
-    bootstrapCode.value.trim().length > 0 &&
-    name.value.trim().length > 0 &&
-    email.value.trim().length > 0 &&
-    !loading.value,
+  () => {
+    if (loading.value || configLoading.value) return false;
+    if (email.value.trim().length === 0 || password.value.length === 0) return false;
+
+    if (!isSetupMode.value) return true;
+
+    return (
+      bootstrapCode.value.trim().length > 0 &&
+      name.value.trim().length > 0 &&
+      password.value.length >= 8
+    );
+  },
 );
 
 function deriveUsername() {
@@ -84,28 +97,50 @@ function navigateAfterLogin(target: string) {
   router.push(target);
 }
 
-async function submitBootstrap() {
+async function loadConfig() {
+  try {
+    const config = await api.get<{ ownerAuthConfigured?: boolean }>("/config");
+    ownerAuthConfigured.value = Boolean(config.ownerAuthConfigured);
+  } catch (configError) {
+    console.error("Config load error:", configError);
+    error.value = "Unable to load setup state.";
+  } finally {
+    configLoading.value = false;
+  }
+}
+
+async function submitAuth() {
   if (!canSubmit.value) return;
 
   loading.value = true;
   error.value = "";
 
-  const success = await auth.bootstrapOwner({
-    bootstrapCode: bootstrapCode.value,
-    email: email.value,
-    name: name.value,
-    username: deriveUsername(),
-  });
+  const success = isSetupMode.value
+    ? await auth.bootstrapOwner({
+        bootstrapCode: bootstrapCode.value,
+        email: email.value,
+        name: name.value,
+        username: deriveUsername(),
+        password: password.value,
+      })
+    : await auth.loginOwner({
+        email: email.value,
+        password: password.value,
+      });
 
   if (success) {
     const redirect = resolvePostLoginRedirect(route.query.redirect);
     navigateAfterLogin(redirect);
   } else {
-    error.value = "Bootstrap failed. Check your owner code and try again.";
+    error.value = isSetupMode.value
+      ? "Setup failed. Check your bootstrap code and password."
+      : "Sign in failed. Check your email and password.";
   }
 
   loading.value = false;
 }
+
+onMounted(loadConfig);
 </script>
 
 <template>
@@ -113,8 +148,9 @@ async function submitBootstrap() {
     <main class="login__main">
       <BrandLogo class="login__logo" alt="me3" />
 
-      <form class="login-form" @submit.prevent="submitBootstrap">
+      <form class="login-form" @submit.prevent="submitAuth">
         <input
+          v-if="isSetupMode"
           v-model="bootstrapCode"
           type="password"
           autocomplete="one-time-code"
@@ -126,6 +162,7 @@ async function submitBootstrap() {
         />
 
         <input
+          v-if="isSetupMode"
           v-model="name"
           type="text"
           autocomplete="name"
@@ -145,8 +182,18 @@ async function submitBootstrap() {
           required
         />
 
+        <input
+          v-model="password"
+          type="password"
+          :autocomplete="isSetupMode ? 'new-password' : 'current-password'"
+          class="input"
+          aria-label="Password"
+          placeholder="Password"
+          required
+        />
+
         <button type="submit" class="button" :disabled="!canSubmit">
-          {{ loading ? "Opening..." : "Open workspace" }}
+          {{ loading ? "Opening..." : isSetupMode ? "Create account" : "Sign in" }}
         </button>
 
         <p v-if="error" class="error">{{ error }}</p>

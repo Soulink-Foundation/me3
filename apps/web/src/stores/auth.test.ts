@@ -114,6 +114,7 @@ describe("auth store", () => {
         email: "owner@example.com",
         name: "ME3 Core Owner",
         username: "owner",
+        password: "correct-horse-battery",
       });
 
       expect(result).toBe(true);
@@ -129,6 +130,7 @@ describe("auth store", () => {
         email: "owner@example.com",
         name: "ME3 Core Owner",
         username: "owner",
+        password: "correct-horse-battery",
       });
     });
 
@@ -150,6 +152,7 @@ describe("auth store", () => {
         email: "   ",
         name: "ME3 Core Owner",
         username: "owner",
+        password: "correct-horse-battery",
       });
 
       expect(result).toBe(true);
@@ -158,6 +161,7 @@ describe("auth store", () => {
         email: undefined,
         name: "ME3 Core Owner",
         username: "owner",
+        password: "correct-horse-battery",
       });
     });
 
@@ -169,6 +173,52 @@ describe("auth store", () => {
         bootstrapCode: "bad-code",
         name: "ME3 Core Owner",
         username: "owner",
+        password: "correct-horse-battery",
+      });
+
+      expect(result).toBe(false);
+      expect(store.user).toBeNull();
+      expect(store.isAuthenticated).toBe(false);
+    });
+  });
+
+  describe("loginOwner", () => {
+    it("sets the owner session when login succeeds", async () => {
+      vi.mocked(api.post).mockResolvedValue({
+        ok: true,
+        owner: {
+          id: "owner",
+          email: "owner@example.com",
+          name: "ME3 Core Owner",
+          username: "owner",
+          timezone: "Europe/Dublin",
+        },
+      });
+
+      const store = useAuthStore();
+      const result = await store.loginOwner({
+        email: " owner@example.com ",
+        password: "correct-horse-battery",
+      });
+
+      expect(result).toBe(true);
+      expect(store.user).toEqual({
+        ...storedUser,
+        timezone: "Europe/Dublin",
+      });
+      expect(api.post).toHaveBeenCalledWith("/auth/login", {
+        email: "owner@example.com",
+        password: "correct-horse-battery",
+      });
+    });
+
+    it("returns false on invalid login", async () => {
+      vi.mocked(api.post).mockRejectedValue(new Error("Invalid login"));
+
+      const store = useAuthStore();
+      const result = await store.loginOwner({
+        email: "owner@example.com",
+        password: "wrong-password",
       });
 
       expect(result).toBe(false);
