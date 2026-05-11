@@ -45,6 +45,12 @@ function createEnv(): Env & {
   const db = {
     prepare(sql: string) {
       return {
+        async all<T>() {
+          if (sql.includes("FROM plugin_installations")) {
+            return { results: [] as T[] };
+          }
+          return { results: [] as T[] };
+        },
         bind(...values: unknown[]) {
           return {
             async run() {
@@ -459,6 +465,62 @@ describe("ME3 Core Worker auth", () => {
     expect(body.user.timezone).toBe("UTC");
     expect(body.user.locale).toBe("en-US");
     expect(body.user.localeSource).toBe("inferred");
+  });
+
+  it("lists curated Core plugins for the signed-in owner", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/plugins", {
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const body = (await response.json()) as {
+      catalogVersion: string;
+      plugins: Array<{
+        id: string;
+        status: string;
+        implementationStatus: string;
+        agentTools: Array<{ id: string; approvalMode: string }>;
+        setupRequirements: Array<{ kind: string; configured: boolean }>;
+      }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.catalogVersion).toMatch(/^\d{4}-\d{2}-\d{2}\.v\d+$/);
+    expect(body.plugins).toEqual([
+      expect.objectContaining({
+        id: "me3.social-publishing",
+        status: "available",
+        implementationStatus: "catalog_only",
+      }),
+    ]);
+    expect(body.plugins[0].agentTools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "content.publish",
+          approvalMode: "approval_required",
+        }),
+      ]),
+    );
+    expect(body.plugins[0].setupRequirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "package",
+          configured: false,
+        }),
+      ]),
+    );
+  });
+
+  it("requires owner auth for plugin catalog access", async () => {
+    const env = createEnv();
+
+    const response = await app.fetch(new Request("http://localhost/api/plugins"), env);
+
+    expect(response.status).toBe(401);
   });
 
   it("updates account timezone and explicit locale", async () => {

@@ -102,6 +102,56 @@ type MailboxResponse = {
   recentActivity: MailboxActivity[];
 };
 
+type PluginStatus = "available" | "installed" | "setup_required" | "disabled";
+
+type PluginSetupRequirement = {
+  id: string;
+  label: string;
+  kind: "package" | "secret" | "binding" | "migration" | "queue" | "cron";
+  required: boolean;
+  configured: boolean;
+  note?: string;
+};
+
+type PluginRecord = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  trustTier: "first_party" | "third_party";
+  distribution: "workspace_package" | "npm_package" | "remote_bundle";
+  implementationStatus: "catalog_only" | "bundled";
+  status: PluginStatus;
+  statusLabel: string;
+  installed: boolean;
+  enabled: boolean;
+  capabilityIds: string[];
+  permissions: { id: string; label: string }[];
+  routes: { id: string; path: string; methods: string[]; auth: string }[];
+  uiSlots: { id: string; slot: string; label: string }[];
+  agentTools: {
+    id: string;
+    label: string;
+    sideEffect: string;
+    approvalMode: string;
+  }[];
+  secrets: { name: string; label: string; required: boolean }[];
+  migrations: { id: string; path: string; destructive: false }[];
+  queuesAndCrons: {
+    id: string;
+    kind: "queue" | "cron";
+    binding?: string;
+    schedule?: string;
+  }[];
+  setupRequirements: PluginSetupRequirement[];
+  notes: string[];
+};
+
+type PluginsResponse = {
+  catalogVersion: string;
+  plugins: PluginRecord[];
+};
+
 const auth = useAuthStore();
 const route = useRoute();
 const router = useRouter();
@@ -131,6 +181,10 @@ const mailboxSources = ref<MailboxSource[]>([]);
 const mailboxRecentActivity = ref<MailboxActivity[]>([]);
 const mailboxMessage = ref<string | null>(null);
 const mailboxError = ref<string | null>(null);
+const pluginsLoading = ref(false);
+const plugins = ref<PluginRecord[]>([]);
+const pluginCatalogVersion = ref("");
+const pluginsError = ref<string | null>(null);
 
 const telegramPanelRef = ref<InstanceType<typeof TelegramConnectPanel> | null>(
   null,
@@ -141,6 +195,7 @@ const openSection = ref({
   regional: false,
   mailbox: false,
   telegram: false,
+  plugins: false,
 });
 
 const timezoneDisplay = computed(() => {
@@ -217,6 +272,30 @@ const telegramStatusClass = computed(() => {
   const panel = telegramPanelRef.value;
   if (!panel) return "pending_setup";
   return telegramAccordionStatusClass(panel.available, panel.connection);
+});
+
+const pluginSummaryLabel = computed(() => {
+  if (pluginsLoading.value) return "Loading";
+  if (plugins.value.length === 0) return "No plugins";
+  const setupRequired = plugins.value.filter(
+    (plugin) => plugin.status === "setup_required",
+  ).length;
+  if (setupRequired > 0) {
+    return `${setupRequired} setup required`;
+  }
+  const installed = plugins.value.filter((plugin) => plugin.installed).length;
+  if (installed > 0) return `${installed} installed`;
+  return `${plugins.value.length} available`;
+});
+
+const pluginSummaryStatusClass = computed(() => {
+  if (plugins.value.some((plugin) => plugin.status === "setup_required")) {
+    return "setup_required";
+  }
+  if (plugins.value.some((plugin) => plugin.status === "installed")) {
+    return "active";
+  }
+  return "available";
 });
 
 function syncAccount(response: AccountResponse) {
@@ -366,6 +445,21 @@ async function pauseMailbox() {
   }
 }
 
+async function loadPlugins() {
+  pluginsLoading.value = true;
+  pluginsError.value = null;
+
+  try {
+    const response = await api.get<PluginsResponse>("/plugins");
+    plugins.value = response.plugins || [];
+    pluginCatalogVersion.value = response.catalogVersion || "";
+  } catch (e: any) {
+    pluginsError.value = e.message || "Failed to load plugins";
+  } finally {
+    pluginsLoading.value = false;
+  }
+}
+
 function formatDateTime(value: string | null): string {
   if (!value) return "Not yet";
   const date = new Date(value);
@@ -414,11 +508,15 @@ async function deleteAccount() {
 onMounted(async () => {
   await loadAccount();
   void loadMailbox();
+  void loadPlugins();
   if (route.query.section === "telegram") {
     openSection.value.telegram = true;
   }
   if (route.query.section === "mailbox") {
     openSection.value.mailbox = true;
+  }
+  if (route.query.section === "plugins") {
+    openSection.value.plugins = true;
   }
 });
 </script>
@@ -798,6 +896,150 @@ onMounted(async () => {
           </div>
         </section>
 
+        <section class="card accordion-card">
+          <button
+            id="account-trigger-plugins"
+            class="accordion-trigger"
+            type="button"
+            :aria-expanded="openSection.plugins"
+            aria-controls="account-panel-plugins"
+            @click="openSection.plugins = !openSection.plugins"
+          >
+            <span class="accordion-title-wrap accordion-title-flex">
+              <h2>Plugins</h2>
+              <span class="status-badge" :class="pluginSummaryStatusClass">
+                {{ pluginSummaryLabel }}
+              </span>
+              <span v-if="pluginCatalogVersion" class="accordion-header-hint">
+                Catalog {{ pluginCatalogVersion }}
+              </span>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true">▼</span>
+          </button>
+          <div
+            id="account-panel-plugins"
+            class="accordion-panel"
+            role="region"
+            aria-labelledby="account-trigger-plugins"
+            :hidden="!openSection.plugins"
+          >
+            <div v-if="pluginsLoading" class="status-row">Loading plugins...</div>
+            <p v-else-if="pluginsError" class="error">{{ pluginsError }}</p>
+
+            <template v-else>
+              <p class="hint">
+                Curated first-party packages can declare their routes, secrets,
+                migrations, UI slots, and agent tools before they are bundled
+                into Core.
+              </p>
+
+              <div v-if="plugins.length" class="plugin-list">
+                <article
+                  v-for="plugin in plugins"
+                  :key="plugin.id"
+                  class="plugin-row"
+                >
+                  <div class="plugin-row__header">
+                    <div class="plugin-row__title">
+                      <h3>{{ plugin.name }}</h3>
+                      <p>{{ plugin.description }}</p>
+                    </div>
+                    <div class="plugin-row__badges">
+                      <span class="status-badge compact" :class="plugin.status">
+                        {{ plugin.statusLabel }}
+                      </span>
+                      <span class="status-pill">
+                        {{
+                          plugin.implementationStatus === "bundled"
+                            ? "Bundled"
+                            : "Catalog only"
+                        }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <dl class="plugin-meta-grid">
+                    <div>
+                      <dt>Trust</dt>
+                      <dd>{{ plugin.trustTier.replace(/_/g, " ") }}</dd>
+                    </div>
+                    <div>
+                      <dt>Routes</dt>
+                      <dd>{{ plugin.routes.length }}</dd>
+                    </div>
+                    <div>
+                      <dt>Tools</dt>
+                      <dd>{{ plugin.agentTools.length }}</dd>
+                    </div>
+                    <div>
+                      <dt>Migrations</dt>
+                      <dd>{{ plugin.migrations.length }}</dd>
+                    </div>
+                  </dl>
+
+                  <div class="plugin-detail-grid">
+                    <section class="plugin-detail-block">
+                      <h4>Setup</h4>
+                      <ul class="plugin-setup-list">
+                        <li
+                          v-for="requirement in plugin.setupRequirements"
+                          :key="requirement.id"
+                        >
+                          <span
+                            class="setup-dot"
+                            :class="{
+                              configured: requirement.configured,
+                              optional: !requirement.required,
+                            }"
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {{ requirement.label }}
+                            <small v-if="requirement.note">
+                              {{ requirement.note }}
+                            </small>
+                          </span>
+                        </li>
+                      </ul>
+                    </section>
+
+                    <section class="plugin-detail-block">
+                      <h4>Agent tools</h4>
+                      <div class="plugin-chip-list">
+                        <span
+                          v-for="tool in plugin.agentTools"
+                          :key="tool.id"
+                          class="plugin-chip"
+                        >
+                          {{ tool.id }}
+                        </span>
+                      </div>
+                    </section>
+                  </div>
+
+                  <div class="plugin-chip-list plugin-chip-list--muted">
+                    <span
+                      v-for="permission in plugin.permissions"
+                      :key="permission.id"
+                      class="plugin-chip"
+                    >
+                      {{ permission.label }}
+                    </span>
+                  </div>
+
+                  <p v-for="note in plugin.notes" :key="note" class="field-hint">
+                    {{ note }}
+                  </p>
+                </article>
+              </div>
+
+              <p v-else class="field-hint">
+                No curated plugins are registered in this Core build.
+              </p>
+            </template>
+          </div>
+        </section>
+
         <section class="danger-section">
           <h2>Danger zone</h2>
           <div class="danger-card">
@@ -1136,6 +1378,168 @@ h1 {
   font-size: 12px;
 }
 
+.plugin-list {
+  display: grid;
+  gap: 14px;
+}
+
+.plugin-row {
+  display: grid;
+  gap: 14px;
+  padding: 16px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.plugin-row:first-child {
+  border-top: none;
+}
+
+.plugin-row__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.plugin-row__title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plugin-row h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 16px;
+}
+
+.plugin-row p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.plugin-row__badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.plugin-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.plugin-meta-grid div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-subtle);
+}
+
+.plugin-meta-grid dt,
+.plugin-meta-grid dd {
+  margin: 0;
+}
+
+.plugin-meta-grid dt {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.plugin-meta-grid dd {
+  overflow-wrap: anywhere;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.plugin-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 14px;
+}
+
+.plugin-detail-block {
+  min-width: 0;
+}
+
+.plugin-detail-block h4 {
+  margin: 0 0 8px;
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.plugin-setup-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-setup-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.plugin-setup-list small {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.setup-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: #c62828;
+}
+
+.setup-dot.configured {
+  background: #2e7d32;
+}
+
+.setup-dot.optional:not(.configured) {
+  background: var(--color-text-muted);
+}
+
+.plugin-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.plugin-chip-list--muted {
+  padding-top: 2px;
+}
+
+.plugin-chip {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .recommended-card {
   display: grid;
   gap: 12px;
@@ -1253,6 +1657,11 @@ h1 {
   color: #2e7d32;
 }
 
+.status-badge.installed {
+  background: rgba(76, 175, 80, 0.14);
+  color: #2e7d32;
+}
+
 .status-badge.forwarded,
 .status-badge.sent,
 .status-badge.approved,
@@ -1262,6 +1671,7 @@ h1 {
 }
 
 .status-badge.pending_setup,
+.status-badge.setup_required,
 .status-badge.pending,
 .status-badge.pending_approval {
   background: rgba(255, 179, 0, 0.16);
@@ -1422,9 +1832,19 @@ h1 {
   .danger-card,
   .email-row,
   .mailbox-source-row,
-  .activity-row {
+  .activity-row,
+  .plugin-row__header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .plugin-row__badges {
+    justify-content: flex-start;
+  }
+
+  .plugin-meta-grid,
+  .plugin-detail-grid {
+    grid-template-columns: 1fr;
   }
 
   .alias-field {

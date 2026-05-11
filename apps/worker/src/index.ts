@@ -3,6 +3,10 @@ import { cors } from "hono/cors";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { Me3UserAgent } from "./user-agent";
 import {
+  CORE_PLUGIN_CATALOG_VERSION,
+  listCorePluginRecords,
+} from "./plugins";
+import {
   getLandingPageTemplate,
   type LandingPageDocument,
   type LandingPageSection,
@@ -285,6 +289,16 @@ app.get("/api/account", async (c) => {
   if (!owner) return c.json({ error: "Account not found" }, 404);
 
   return c.json({ user: serializeAccountOwner(owner) });
+});
+
+app.get("/api/plugins", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  return c.json({
+    catalogVersion: CORE_PLUGIN_CATALOG_VERSION,
+    plugins: await listCorePluginRecords(c.env),
+  });
 });
 
 app.put("/api/account", async (c) => {
