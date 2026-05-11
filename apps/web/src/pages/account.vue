@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { definePage } from "unplugin-vue-router/runtime";
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import {
   AGENT_LOCALE_OPTIONS,
   getAgentLocaleDisplayLabel,
   inferLocaleFromTimeZone,
 } from "../../../../shared/agent-locales";
 import { api } from "../api";
+import TelegramConnectPanel from "../components/TelegramConnectPanel.vue";
 import { useAuthStore } from "../stores/auth";
 import {
   detectBrowserTimeZone,
@@ -15,11 +16,15 @@ import {
   isValidTimeZone,
   listSupportedTimeZones,
 } from "../utils/timezone";
+import {
+  telegramAccordionStatusClass,
+  telegramAccordionStatusLabel,
+} from "../utils/telegram-connection-ui";
 
 definePage({
   meta: {
     requiresAuth: true,
-    title: "Settings | ME3",
+    title: "Account | ME3",
     description: "Manage your local ME3 Core account settings.",
     robots: "noindex,follow",
   },
@@ -38,6 +43,7 @@ type AccountResponse = {
 };
 
 const auth = useAuthStore();
+const route = useRoute();
 const router = useRouter();
 
 const loading = ref(false);
@@ -53,6 +59,17 @@ const deleteConfirmInput = ref("");
 const deleteLoading = ref(false);
 const deleteError = ref<string | null>(null);
 const supportedTimeZones = listSupportedTimeZones();
+
+const telegramPanelRef = ref<InstanceType<typeof TelegramConnectPanel> | null>(
+  null,
+);
+
+const openSection = ref({
+  email: true,
+  regional: false,
+  mailbox: false,
+  telegram: false,
+});
 
 const effectiveLocaleValue = computed(
   () => localeInput.value || inferLocaleFromTimeZone(timezoneInput.value),
@@ -71,11 +88,11 @@ const localeOptions = computed(() => {
     return AGENT_LOCALE_OPTIONS;
   }
   return [
-    ...AGENT_LOCALE_OPTIONS,
     {
       value: currentValue,
       label: getAgentLocaleDisplayLabel(currentValue),
     },
+    ...AGENT_LOCALE_OPTIONS,
   ];
 });
 
@@ -93,6 +110,22 @@ const saveDisabled = computed(
     (timezoneInput.value === savedTimezoneInput.value &&
       localeInput.value === savedLocaleInput.value),
 );
+
+const telegramStatusLabel = computed(() => {
+  const panel = telegramPanelRef.value;
+  if (!panel) return "";
+  return telegramAccordionStatusLabel(
+    panel.available,
+    panel.configured,
+    panel.connection,
+  );
+});
+
+const telegramStatusClass = computed(() => {
+  const panel = telegramPanelRef.value;
+  if (!panel) return "pending_setup";
+  return telegramAccordionStatusClass(panel.available, panel.connection);
+});
 
 function syncAccount(response: AccountResponse) {
   auth.setSession({
@@ -114,7 +147,7 @@ async function loadAccount() {
     const response = await api.get<AccountResponse>("/account");
     syncAccount(response);
   } catch (e: any) {
-    error.value = e.message || "Failed to load settings";
+    error.value = e.message || "Failed to load account settings";
   } finally {
     loading.value = false;
   }
@@ -142,9 +175,9 @@ async function saveSettings() {
       locale: localeInput.value || null,
     });
     syncAccount(response);
-    message.value = "Settings saved.";
+    message.value = "Regional settings updated.";
   } catch (e: any) {
-    error.value = e.message || "Failed to save settings";
+    error.value = e.message || "Failed to save regional settings";
   } finally {
     saving.value = false;
   }
@@ -187,183 +220,304 @@ async function deleteAccount() {
 
 onMounted(async () => {
   await loadAccount();
+  if (route.query.section === "telegram") {
+    openSection.value.telegram = true;
+  }
+  if (route.query.section === "mailbox") {
+    openSection.value.mailbox = true;
+  }
 });
 </script>
 
 <template>
-  <main class="settings-page">
-    <section class="settings-shell">
-      <header class="settings-header">
-        <div>
-          <h1>Settings</h1>
-          <p>
-            Configure this ME3 Core install. Hosted billing, managed mailbox,
-            and plugin-specific connectors are intentionally absent from the
-            base app.
-          </p>
-        </div>
-        <button class="button secondary" type="button" @click="logout">
-          Sign out
-        </button>
-      </header>
+  <div class="account-page">
+    <Teleport to="#app-side-nav-mobile-page-controls">
+      <div class="account-mobile-title">Account</div>
+    </Teleport>
 
-      <div v-if="loading" class="state-row">Loading settings...</div>
+    <main class="main">
+      <h1>Account</h1>
+
+      <div v-if="loading" class="status-row">Loading account...</div>
 
       <template v-else>
-        <section class="settings-panel" aria-labelledby="account-heading">
-          <div class="panel-heading">
-            <h2 id="account-heading">Account</h2>
-            <p>Your local admin identity for this Core installation.</p>
-          </div>
-          <div class="field-grid">
-            <label>
-              <span>Email</span>
+        <section class="card accordion-card">
+          <button
+            id="account-trigger-email"
+            class="accordion-trigger"
+            type="button"
+            :aria-expanded="openSection.email"
+            aria-controls="account-panel-email"
+            @click="openSection.email = !openSection.email"
+          >
+            <span class="accordion-title-wrap">
+              <h2>Account email</h2>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true">▼</span>
+          </button>
+          <div
+            id="account-panel-email"
+            class="accordion-panel"
+            role="region"
+            aria-labelledby="account-trigger-email"
+            :hidden="!openSection.email"
+          >
+            <div class="email-row">
               <input
                 class="input"
                 type="email"
                 :value="auth.user?.email || ''"
-                readonly
+                disabled
               />
-            </label>
-            <label>
-              <span>User ID</span>
-              <input
-                class="input"
-                type="text"
-                :value="auth.user?.id || ''"
-                readonly
-              />
-            </label>
+              <button class="button secondary" type="button" @click="logout">
+                Sign out
+              </button>
+            </div>
           </div>
         </section>
 
-        <section class="settings-panel" aria-labelledby="regional-heading">
-          <div class="panel-heading">
-            <h2 id="regional-heading">Regional Settings</h2>
-            <p>Used by calendar, email, assistant replies, and local dates.</p>
-          </div>
-
-          <div class="field-grid">
-            <label>
-              <span>Timezone</span>
-              <input
-                v-model="timezoneInput"
-                class="input"
-                type="text"
-                list="account-timezone-options"
-                placeholder="Europe/Dublin"
-              />
-              <datalist id="account-timezone-options">
-                <option
-                  v-for="zone in supportedTimeZones"
-                  :key="zone"
-                  :value="zone"
-                />
-              </datalist>
-            </label>
-
-            <label>
-              <span>Assistant locale</span>
-              <select v-model="localeInput" class="input">
-                <option value="">
-                  Use timezone default ({{ effectiveLocaleLabel }})
-                </option>
-                <option
-                  v-for="option in localeOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </option>
-              </select>
-            </label>
-          </div>
-
-          <div class="summary-row">
-            <span>{{ timezoneDisplay }}</span>
-            <span>{{ effectiveLocaleLabel }}</span>
-          </div>
-
-          <div class="actions">
-            <button class="button secondary" type="button" @click="detectTimezoneValue">
-              Detect timezone
-            </button>
-            <button
-              class="button primary"
-              type="button"
-              :disabled="saveDisabled"
-              @click="saveSettings"
-            >
-              {{ saving ? "Saving..." : "Save settings" }}
-            </button>
-          </div>
-        </section>
-
-        <section class="settings-panel" aria-labelledby="install-heading">
-          <div class="panel-heading">
-            <h2 id="install-heading">Install Surface</h2>
-            <p>
-              Calendar, email, sites, assistant, and settings are part of the
-              first Core slice. Payments, hosted mailbox automation, social
-              publishing, and third-party app connectors belong in later plugin
-              or hosted layers.
-            </p>
-          </div>
-        </section>
-
-        <section class="settings-panel danger" aria-labelledby="danger-heading">
-          <div class="panel-heading">
-            <h2 id="danger-heading">Danger Zone</h2>
-            <p>Delete the local account and its sites from this install.</p>
-          </div>
-          <button class="button danger" type="button" @click="openDeleteModal">
-            Delete account
+        <section class="card accordion-card">
+          <button
+            id="account-trigger-regional"
+            class="accordion-trigger"
+            type="button"
+            :aria-expanded="openSection.regional"
+            aria-controls="account-panel-regional"
+            @click="openSection.regional = !openSection.regional"
+          >
+            <span class="accordion-title-wrap accordion-title-flex">
+              <h2>Regional settings</h2>
+              <span class="accordion-header-hint">
+                {{ effectiveLocaleLabel }}
+              </span>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true">▼</span>
           </button>
+          <div
+            id="account-panel-regional"
+            class="accordion-panel"
+            role="region"
+            aria-labelledby="account-trigger-regional"
+            :hidden="!openSection.regional"
+          >
+            <p class="hint">
+              Agent replies follow your locale preference, and scheduled jobs,
+              briefings, and account-level dates use your timezone.
+            </p>
+            <div class="timezone-grid">
+              <label class="field">
+                <span>Timezone</span>
+                <input
+                  v-model="timezoneInput"
+                  class="input"
+                  type="text"
+                  list="account-timezone-options"
+                  placeholder="Start typing a timezone"
+                  spellcheck="false"
+                />
+                <datalist id="account-timezone-options">
+                  <option
+                    v-for="zone in supportedTimeZones"
+                    :key="zone"
+                    :value="zone"
+                  >
+                    {{ getTimeZoneDisplayLabel(zone) }}
+                  </option>
+                </datalist>
+              </label>
+
+              <label class="field">
+                <span>Agent locale</span>
+                <select v-model="localeInput" class="input">
+                  <option value="">
+                    Use timezone default ({{ effectiveLocaleLabel }})
+                  </option>
+                  <option
+                    v-for="option in localeOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+              </label>
+
+              <div class="timezone-summary">
+                <span class="timezone-summary-label">Current timezone</span>
+                <strong>{{ timezoneDisplay }}</strong>
+                <span class="timezone-summary-label">Agent locale</span>
+                <strong>{{ effectiveLocaleLabel }}</strong>
+                <span class="timezone-summary-label">
+                  {{
+                    localeInput
+                      ? "Saved explicitly."
+                      : `Defaulting from ${timezoneInput || "UTC"}.`
+                  }}
+                </span>
+              </div>
+            </div>
+
+            <div class="button-row">
+              <button
+                class="button secondary"
+                type="button"
+                @click="detectTimezoneValue"
+              >
+                Detect from browser
+              </button>
+              <button
+                class="button primary"
+                type="button"
+                :disabled="saveDisabled"
+                @click="saveSettings"
+              >
+                {{ saving ? "Saving..." : "Save regional settings" }}
+              </button>
+            </div>
+
+            <p v-if="message" class="success">{{ message }}</p>
+            <p v-if="error" class="error">{{ error }}</p>
+          </div>
         </section>
 
-        <p v-if="message" class="success">{{ message }}</p>
-        <p v-if="error" class="error">{{ error }}</p>
+        <section class="card accordion-card">
+          <button
+            id="account-trigger-mailbox"
+            class="accordion-trigger"
+            type="button"
+            :aria-expanded="openSection.mailbox"
+            aria-controls="account-panel-mailbox"
+            @click="openSection.mailbox = !openSection.mailbox"
+          >
+            <span class="accordion-title-wrap accordion-title-flex">
+              <h2>Mailbox settings</h2>
+              <span class="status-badge active">Core</span>
+              <span class="accordion-header-hint">
+                Account-level mailbox configuration is being tracked for Core.
+              </span>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true">▼</span>
+          </button>
+          <div
+            id="account-panel-mailbox"
+            class="accordion-panel"
+            role="region"
+            aria-labelledby="account-trigger-mailbox"
+            :hidden="!openSection.mailbox"
+          >
+            <div class="recommended-card">
+              <span class="recommended-pill">Core follow-up</span>
+              <h3>Mailbox configuration belongs in ME3 Core</h3>
+              <p class="hint">
+                The account surface should expose alias, source, forwarding,
+                and mailbox health controls without hosted-only billing or
+                production Cloudflare routing assumptions.
+              </p>
+              <router-link class="button secondary link-button-inline" to="/email">
+                Open mailbox
+              </router-link>
+            </div>
+          </div>
+        </section>
+
+        <section class="card accordion-card">
+          <button
+            id="account-trigger-telegram"
+            class="accordion-trigger"
+            type="button"
+            :aria-expanded="openSection.telegram"
+            aria-controls="account-panel-telegram"
+            @click="openSection.telegram = !openSection.telegram"
+          >
+            <span class="accordion-title-wrap accordion-title-flex">
+              <h2>Telegram settings</h2>
+              <span
+                v-if="telegramPanelRef?.available"
+                class="status-badge"
+                :class="telegramStatusClass"
+              >
+                {{ telegramStatusLabel }}
+              </span>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true">▼</span>
+          </button>
+          <div
+            id="account-panel-telegram"
+            class="accordion-panel"
+            role="region"
+            aria-labelledby="account-trigger-telegram"
+            :hidden="!openSection.telegram"
+          >
+            <TelegramConnectPanel
+              ref="telegramPanelRef"
+              variant="default"
+              :auto-prepare-when-not-connected="
+                route.query.section === 'telegram'
+              "
+            />
+          </div>
+        </section>
+
+        <section class="danger-section">
+          <h2>Danger zone</h2>
+          <div class="danger-card">
+            <div>
+              <strong>Delete your account</strong>
+              <p>
+                This will permanently delete your ME3 Core account, all of your
+                sites, and associated data. This action cannot be undone.
+              </p>
+            </div>
+            <button class="button danger" type="button" @click="openDeleteModal">
+              Delete
+            </button>
+          </div>
+        </section>
       </template>
-    </section>
+    </main>
 
     <div
       v-if="showDeleteModal"
-      class="modal-backdrop"
-      role="presentation"
+      class="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Delete account"
       @click.self="closeDeleteModal"
     >
-      <section
-        class="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-account-title"
-      >
-        <header class="modal-header">
-          <h2 id="delete-account-title">Delete account</h2>
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Delete account</h2>
           <button
             class="modal-close"
             type="button"
-            aria-label="Close"
             :disabled="deleteLoading"
             @click="closeDeleteModal"
           >
             ×
           </button>
-        </header>
-        <p>
-          This permanently deletes the account and associated site data in this
-          Core install.
+        </div>
+
+        <p class="hint">
+          This will permanently delete your ME3 Core account, all of your sites,
+          and associated data. This cannot be undone.
         </p>
-        <label class="delete-confirm">
-          <span>Type DELETE to confirm</span>
+
+        <div class="delete-confirm">
+          <p class="confirm-text">
+            To confirm, type
+            <code>DELETE</code>
+            below.
+          </p>
           <input
             v-model="deleteConfirmInput"
             class="input"
             type="text"
+            placeholder="DELETE"
             :disabled="deleteLoading"
           />
-        </label>
-        <div class="actions">
+        </div>
+
+        <div class="modal-actions">
           <button
             class="button secondary"
             type="button"
@@ -381,235 +535,422 @@ onMounted(async () => {
             {{ deleteLoading ? "Deleting..." : "Delete account" }}
           </button>
         </div>
+
         <p v-if="deleteError" class="error">{{ deleteError }}</p>
-      </section>
+      </div>
     </div>
-  </main>
+  </div>
 </template>
 
 <style scoped>
-.settings-page {
+.account-page {
   min-height: 100vh;
-  padding: 32px;
-  background: var(--ui-bg, var(--color-bg));
-  color: var(--ui-text, var(--color-text));
 }
 
-.settings-shell {
-  display: grid;
-  gap: 16px;
-  max-width: 880px;
+.main {
+  max-width: 700px;
   margin: 0 auto;
+  padding: 20px 40px;
 }
 
-.settings-header,
-.settings-panel {
-  border: 1px solid var(--ui-border, var(--color-border));
-  border-radius: var(--ui-radius-lg, 12px);
-  background: var(--ui-surface, var(--color-card));
-}
-
-.settings-header {
-  display: flex;
-  gap: 20px;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding: 24px;
-}
-
-.settings-header h1,
-.settings-header p,
-.panel-heading h2,
-.panel-heading p {
-  margin: 0;
-}
-
-.settings-header h1 {
-  font-size: 32px;
+h1 {
+  margin: 0 0 24px;
+  font-size: 28px;
   line-height: 1.1;
 }
 
-.settings-header p,
-.panel-heading p {
-  max-width: 640px;
-  color: var(--ui-text-muted, var(--color-text-muted));
-  font-size: 14px;
-  line-height: 1.55;
+.account-mobile-title {
+  display: none;
 }
 
-.settings-panel {
-  display: grid;
-  gap: 18px;
-  padding: 22px;
+.card {
+  margin-bottom: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg);
 }
 
-.settings-panel.danger {
-  border-color: rgba(220, 38, 38, 0.35);
+.accordion-card {
+  padding: 0;
+  overflow: hidden;
 }
 
-.panel-heading {
-  display: grid;
-  gap: 6px;
-}
-
-.panel-heading h2 {
-  font-size: 18px;
-}
-
-.field-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-
-label {
-  display: grid;
-  gap: 8px;
-  color: var(--ui-text-muted, var(--color-text-muted));
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.input {
-  min-height: 42px;
-  width: 100%;
-  padding: 0 12px;
-  border: 1px solid var(--ui-border, var(--color-border));
-  border-radius: var(--ui-radius-md, 10px);
-  background: var(--ui-bg, var(--color-bg));
-  color: var(--ui-text, var(--color-text));
-  font: inherit;
-  box-sizing: border-box;
-}
-
-.input[readonly] {
-  color: var(--ui-text-muted, var(--color-text-muted));
-}
-
-.summary-row {
+.accordion-trigger {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
 
-.summary-row span {
-  padding: 6px 10px;
-  border: 1px solid var(--ui-border, var(--color-border));
+.accordion-trigger:hover {
+  background: var(--color-bg-subtle);
+}
+
+.accordion-title-wrap h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.accordion-title-flex {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.accordion-header-hint {
+  flex: 1 1 200px;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.accordion-chevron {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.65;
+  transition: transform 0.2s ease;
+}
+
+.accordion-trigger[aria-expanded="true"] .accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.accordion-panel {
+  padding: 10px 16px 16px;
+}
+
+.email-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.email-row .input {
+  flex: 1;
+}
+
+.hint {
+  margin: 0 0 16px;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.timezone-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.timezone-summary {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-subtle);
+}
+
+.timezone-summary-label {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.recommended-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(76, 175, 80, 0.3);
+  border-radius: 12px;
+  background: rgba(76, 175, 80, 0.08);
+}
+
+.recommended-card h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.recommended-card .hint {
+  margin-bottom: 0;
+}
+
+.recommended-pill {
+  width: fit-content;
+  padding: 4px 8px;
   border-radius: 999px;
-  color: var(--ui-text-muted, var(--color-text-muted));
+  background: rgba(46, 125, 50, 0.16);
+  color: #2e7d32;
   font-size: 12px;
   font-weight: 700;
 }
 
-.actions {
+.input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.input:disabled {
+  color: var(--color-text-muted);
+  opacity: 1;
+}
+
+.button-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
+  gap: 12px;
+  margin: 16px 0 0;
 }
 
 .button {
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--ui-border, var(--color-border));
-  border-radius: var(--ui-radius-md, 10px);
+  padding: 12px 18px;
+  border: none;
+  border-radius: 10px;
   font: inherit;
-  font-weight: 800;
+  font-weight: 600;
   cursor: pointer;
+}
+
+.button.primary {
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+.button.secondary {
+  background: var(--color-border);
+  color: var(--color-text);
+}
+
+.button.danger {
+  background: #e53935;
+  color: #ffffff;
 }
 
 .button:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.6;
 }
 
-.button.primary {
-  border-color: var(--ui-accent, #22c55e);
-  background: var(--ui-accent, #22c55e);
-  color: var(--ui-accent-contrast, #04110a);
+.link-button-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  text-decoration: none;
 }
 
-.button.secondary {
-  background: var(--ui-bg, var(--color-bg));
-  color: var(--ui-text, var(--color-text));
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--color-border);
+  color: var(--color-text-muted);
 }
 
-.button.danger {
-  border-color: #dc2626;
-  background: #dc2626;
-  color: #fff;
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.14);
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: capitalize;
 }
 
-.state-row,
-.success,
-.error {
-  margin: 0;
-  color: var(--ui-text-muted, var(--color-text-muted));
-  font-size: 14px;
+.status-badge.active {
+  background: rgba(76, 175, 80, 0.14);
+  color: #2e7d32;
+}
+
+.status-badge.pending_setup,
+.status-badge.pending {
+  background: rgba(255, 179, 0, 0.16);
+  color: #9a6700;
+}
+
+.status-badge.paused,
+.status-badge.disconnected {
+  background: rgba(229, 57, 53, 0.14);
+  color: #c62828;
 }
 
 .success {
-  color: #15803d;
+  margin: 12px 0 0;
+  color: #2e7d32;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .error {
-  color: #dc2626;
+  margin: 12px 0 0;
+  color: #e53935;
+  font-size: 14px;
+  font-weight: 600;
 }
 
-.modal-backdrop {
+.danger-section {
+  margin-top: 32px;
+}
+
+.danger-section h2 {
+  margin: 0 0 12px;
+  color: #e53935;
+  font-size: 18px;
+}
+
+.danger-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border: 1px solid
+    color-mix(in oklab, #e53935 34%, var(--color-border));
+  border-radius: 12px;
+  background: color-mix(in oklab, #e53935 12%, var(--color-bg-subtle));
+}
+
+.danger-card strong {
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.danger-card p {
+  margin: 2px 0 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  background: rgba(0, 0, 0, 0.5);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
 }
 
 .modal {
-  display: grid;
-  gap: 16px;
-  width: min(480px, 100%);
-  padding: 22px;
-  border: 1px solid var(--ui-border, var(--color-border));
-  border-radius: var(--ui-radius-lg, 12px);
-  background: var(--ui-surface, var(--color-card));
-}
-
-.modal p,
-.modal h2 {
-  margin: 0;
+  width: min(560px, 100%);
+  padding: 24px;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-bg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.2);
 }
 
 .modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.modal-header h2 {
+  margin: 0;
 }
 
 .modal-close {
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--ui-border, var(--color-border));
-  border-radius: 999px;
-  background: var(--ui-bg, var(--color-bg));
-  color: var(--ui-text, var(--color-text));
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 24px;
+  line-height: 1;
   cursor: pointer;
 }
 
+.delete-confirm {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.confirm-text {
+  margin: 0;
+  font-size: 14px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 @media (max-width: 720px) {
-  .settings-page {
-    padding: 20px;
+  .main {
+    padding: 16px;
   }
 
-  .settings-header,
-  .field-grid {
-    grid-template-columns: 1fr;
+  .main > h1 {
+    display: none;
   }
 
-  .settings-header {
+  .account-mobile-title {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text);
+    font-size: 15px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .danger-card,
+  .email-row {
     flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .email-row .button,
+  .danger-card .button {
+    width: 100%;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .recommended-card {
+    background: rgba(46, 125, 50, 0.14);
+    border-color: rgba(129, 199, 132, 0.32);
+  }
+
+  .recommended-pill {
+    color: #c8e6c9;
   }
 }
 </style>
