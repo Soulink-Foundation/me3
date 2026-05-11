@@ -11,6 +11,9 @@ dist/
 .env.local
 .dev.vars
 
+# Local issue tracker state
+.beads/
+
 # Logs
 *.log
 logs/
