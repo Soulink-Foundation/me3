@@ -4,10 +4,70 @@ import { api } from "../api";
 
 interface User {
   id: string;
-  email: string;
+  email: string | null;
+  name: string;
+  username: string;
   timezone: string | null;
   locale: string;
   localeSource: "explicit" | "inferred";
+}
+
+interface OwnerProfile {
+  id: string;
+  email: string | null;
+  name: string;
+  username: string;
+  timezone: string | null;
+}
+
+export interface BootstrapOwnerInput {
+  bootstrapCode: string;
+  email?: string;
+  name: string;
+  username: string;
+}
+
+const STORAGE_KEY = "me3_core_owner_session";
+
+function hasBrowserStorage() {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function ownerToUser(owner: OwnerProfile): User {
+  return {
+    id: owner.id,
+    email: owner.email,
+    name: owner.name,
+    username: owner.username,
+    timezone: owner.timezone,
+    locale: "en-US",
+    localeSource: "inferred",
+  };
+}
+
+function readStoredSession(): User | null {
+  if (!hasBrowserStorage()) return null;
+
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as User;
+    if (!parsed?.id || !parsed?.username) return null;
+    return parsed;
+  } catch {
+    window.localStorage.removeItem(STORAGE_KEY);
+    return null;
+  }
+}
+
+function writeStoredSession(newUser: User) {
+  if (!hasBrowserStorage()) return;
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(newUser));
+}
+
+function clearStoredSession() {
+  if (!hasBrowserStorage()) return;
+  window.localStorage.removeItem(STORAGE_KEY);
 }
 
 export const useAuthStore = defineStore("auth", () => {
@@ -20,17 +80,12 @@ export const useAuthStore = defineStore("auth", () => {
   function setSession(newUser: User) {
     user.value = newUser;
     initialized.value = true;
+    writeStoredSession(newUser);
   }
 
   async function refreshSession(): Promise<boolean> {
-    try {
-      const response = await api.get<{ user: User }>("/auth/me");
-      user.value = response.user;
-      return true;
-    } catch {
-      user.value = null;
-      return false;
-    }
+    user.value = readStoredSession();
+    return Boolean(user.value);
   }
 
   async function ensureInitialized(): Promise<void> {
@@ -50,42 +105,31 @@ export const useAuthStore = defineStore("auth", () => {
     await initializePromise;
   }
 
-  async function requestCode(email: string): Promise<boolean> {
+  async function bootstrapOwner(input: BootstrapOwnerInput): Promise<boolean> {
     try {
-      await api.post("/auth/request", { email });
-      return true;
-    } catch (error) {
-      console.error("Request code error:", error);
-      return false;
-    }
-  }
-
-  async function verifyCode(email: string, code: string): Promise<boolean> {
-    try {
-      const response = await api.post<{ user: User }>(
-        "/auth/verify",
-        { email, code },
+      const response = await api.post<{ ok: boolean; owner: OwnerProfile }>(
+        "/admin/bootstrap",
+        {
+          bootstrapCode: input.bootstrapCode,
+          email: input.email?.trim() || undefined,
+          name: input.name.trim(),
+          username: input.username.trim(),
+        },
       );
 
-      setSession(response.user);
+      if (!response.ok) return false;
+      setSession(ownerToUser(response.owner));
       return true;
     } catch (error) {
-      console.error("Verify code error:", error);
+      console.error("Bootstrap owner error:", error);
       return false;
     }
   }
 
   async function logout() {
-    // Clear client auth state immediately so route guards stop treating
-    // the user as authenticated before the network call completes.
     user.value = null;
     initialized.value = true;
-
-    try {
-      await api.post("/auth/logout");
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
+    clearStoredSession();
   }
 
   return {
@@ -94,8 +138,7 @@ export const useAuthStore = defineStore("auth", () => {
     isAuthenticated,
     ensureInitialized,
     refreshSession,
-    requestCode,
-    verifyCode,
+    bootstrapOwner,
     logout,
     setSession,
   };

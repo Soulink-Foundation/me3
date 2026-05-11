@@ -28,7 +28,9 @@ definePage({
 type AccountResponse = {
   user: {
     id: string;
-    email: string;
+    email: string | null;
+    name: string;
+    username: string;
     timezone: string | null;
     locale: string;
     localeSource: "explicit" | "inferred";
@@ -93,7 +95,11 @@ const saveDisabled = computed(
 );
 
 function syncAccount(response: AccountResponse) {
-  auth.setSession(response.user);
+  auth.setSession({
+    ...response.user,
+    name: response.user.name ?? auth.user?.name ?? "ME3 Core Owner",
+    username: response.user.username ?? auth.user?.username ?? "owner",
+  });
   timezoneInput.value = response.user.timezone || "";
   savedTimezoneInput.value = timezoneInput.value;
   localeInput.value =

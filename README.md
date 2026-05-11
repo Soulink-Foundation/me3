@@ -1,10 +1,10 @@
 # me3
 
-Private extraction scaffold for the installable ME3 Core personal/business AI assistant.
+Installable ME3 Core personal/business AI assistant scaffold.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Soulink-Foundation/me3)
 
-The deploy button works after this repository is public. While the repo is private, use the local flow below.
+The deploy button works when this repository is publicly reachable. For local development, use the flow below.
 
 This repository is intentionally small at first. It is not a raw split of `me3-app`; it is the curated first slice that will become a bootable Cloudflare install template.
 
@@ -88,3 +88,9 @@ wrangler deploy --config wrangler.toml
 ```
 
 The `pnpm deploy` script runs the build, remote D1 migration, and Worker deploy in sequence. Use it only after authenticating Wrangler and confirming the generated Cloudflare resource names/IDs.
+
+## Public Distribution
+
+ME3 Core is licensed under the MIT License. See [LICENSE](./LICENSE).
+
+Before redistributing a fork or public template, review [ASSET_PROVENANCE.md](./ASSET_PROVENANCE.md) for included public assets and [SECURITY.md](./SECURITY.md) for responsible disclosure and secret-handling expectations.

@@ -133,11 +133,11 @@ const sampleRows = ref<OutreachSampleFormRow[]>([
 
 const samplePlaceholders: Record<string, string> = {
   email:
-    "Dear ME3,\n\nI am human. Sometimes I make mistakes. Also I don't use em dashes so when you're writing for me, please don't use them.\n\nYours sincerely,\n\nYour CEO.",
+    "Hello,\n\nI prefer clear, direct email. Please keep replies brief, practical, and friendly. Avoid over-promising, and ask a follow-up question when context is missing.\n\nThanks.",
   linkedin:
-    "Hola mis professionales, LinkedIn is where I pretend to be very professional (which I am) but sometimes I'll crack a joke and be authentically vulnerable because humans aren't robots that climb ladders all day.",
+    "I write in a conversational professional voice. I like specific examples, plain language, and useful takeaways. Please avoid hype and generic business cliches.",
   general:
-    "Hey buddy, I talk like a real person, not a press release. I say 'honestly' too much, and I usually sign-off like Captain Kirk because I'm boldly going where no one has gone before.",
+    "Use a warm, grounded tone. Prefer short sentences, concrete details, and a calm pace. Sound like a thoughtful person, not a press release.",
 };
 
 const editHour = ref(7);

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Installable ME3 Core assistant scaffold",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "pnpm --parallel --filter @me3-core/worker --filter @me3/web dev",

@@ -11,7 +11,7 @@ definePage({
     title: "Page not found | ME3",
     description: "This page does not exist.",
     robots: "noindex,nofollow",
-    ogImage: "/me3protocol.jpg",
+    ogImage: "/icons/icon-512.png",
   },
 });
 
@@ -64,15 +64,9 @@ const pathLabel = computed(() => route.path);
         </div>
         <div class="visual-wrap">
           <div class="visual" aria-hidden="true">
-            <img
-              class="hero-image"
-              src="/me3protocol.jpg"
-              alt=""
-              width="1024"
-              height="1024"
-              loading="lazy"
-              decoding="async"
-            />
+            <BrandLogo class="hero-logo" alt="" />
+            <span />
+            <span />
           </div>
         </div>
       </div>
@@ -273,19 +267,28 @@ const pathLabel = computed(() => route.path);
 }
 
 .visual {
-  width: min(100%, 520px);
+  display: grid;
+  align-content: center;
+  gap: 18px;
+  width: min(100%, 420px);
   aspect-ratio: 1;
-  border-radius: 9999px;
-  overflow: hidden;
+  padding: clamp(42px, 7vw, 72px);
+  border-radius: 8px;
   border: 1px solid var(--color-border);
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.12);
 }
 
-.hero-image {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
+.hero-logo {
+  width: min(100%, 220px);
+  height: auto;
+}
+
+.visual span {
   display: block;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.visual span:last-child {
+  width: 52%;
 }
 </style>

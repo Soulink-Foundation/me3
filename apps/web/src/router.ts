@@ -59,8 +59,8 @@ router.beforeEach(async (to, _from, next) => {
     syncedSessionUserId = currentSessionUserId;
   }
 
-  // Redirect logged-in users from public landing page to the app landing path.
-  if (to.path === "/" && auth.isAuthenticated) {
+  // Redirect logged-in users from public setup routes to the app landing path.
+  if ((to.path === "/" || to.path === "/login") && auth.isAuthenticated) {
     next({ path: DEFAULT_APP_PATH });
     return;
   }
@@ -192,7 +192,7 @@ router.afterEach((to) => {
   const robots = (to.meta?.robots as string) || "index,follow";
   const ogTitle = (to.meta?.ogTitle as string) || title;
   const ogDescription = (to.meta?.ogDescription as string) || description;
-  const rawOgImage = (to.meta?.ogImage as string) || "/me3protocol.jpg";
+  const rawOgImage = (to.meta?.ogImage as string) || "/icons/icon-512.png";
 
   document.title = title;
   updateMetaTag("description", description);

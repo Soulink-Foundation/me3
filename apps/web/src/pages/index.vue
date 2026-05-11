@@ -10,7 +10,7 @@ definePage({
     title: "ME3 Core | Personal AI assistant",
     description:
       "ME3 Core is an installable personal AI assistant for your calendar, email, sites, and profile.",
-    ogImage: "/me3protocol.jpg",
+    ogImage: "/icons/icon-512.png",
   },
 });
 
@@ -72,15 +72,14 @@ const primaryCta = computed(() =>
         </div>
 
         <div class="hero__visual" aria-hidden="true">
-          <img
-            class="hero__image"
-            src="/me3protocol.jpg"
-            alt=""
-            width="1024"
-            height="1024"
-            loading="eager"
-            decoding="async"
-          />
+          <div class="hero__mark">
+            <BrandLogo class="hero__mark-logo" alt="" />
+            <div class="hero__mark-lines">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -218,12 +217,40 @@ const primaryCta = computed(() =>
   justify-content: center;
 }
 
-.hero__image {
-  display: block;
+.hero__mark {
+  display: grid;
+  align-content: center;
+  gap: 30px;
   width: min(100%, 420px);
-  height: auto;
+  aspect-ratio: 1;
+  padding: clamp(38px, 6vw, 64px);
   border-radius: 8px;
   border: 1px solid var(--ui-border, var(--color-border));
+  background: var(--ui-bg, var(--color-bg));
+}
+
+.hero__mark-logo {
+  width: min(100%, 240px);
+  height: auto;
+}
+
+.hero__mark-lines {
+  display: grid;
+  gap: 12px;
+}
+
+.hero__mark-lines span {
+  display: block;
+  height: 1px;
+  background: var(--ui-border, var(--color-border));
+}
+
+.hero__mark-lines span:nth-child(2) {
+  width: 74%;
+}
+
+.hero__mark-lines span:nth-child(3) {
+  width: 46%;
 }
 
 @media (max-width: 820px) {
@@ -249,7 +276,7 @@ const primaryCta = computed(() =>
     justify-content: flex-start;
   }
 
-  .hero__image {
+  .hero__mark {
     width: min(100%, 360px);
   }
 }
