@@ -227,6 +227,40 @@ describe("auth store", () => {
     });
   });
 
+  describe("resetOwnerPassword", () => {
+    it("posts bootstrap-code password reset details", async () => {
+      vi.mocked(api.post).mockResolvedValue({ ok: true });
+
+      const store = useAuthStore();
+      const result = await store.resetOwnerPassword({
+        email: " owner@example.com ",
+        bootstrapCode: "local-code",
+        password: "new-correct-horse",
+      });
+
+      expect(result).toBe(true);
+      expect(store.user).toBeNull();
+      expect(api.post).toHaveBeenCalledWith("/auth/password-reset/bootstrap", {
+        email: "owner@example.com",
+        bootstrapCode: "local-code",
+        password: "new-correct-horse",
+      });
+    });
+
+    it("returns false when bootstrap-code password reset fails", async () => {
+      vi.mocked(api.post).mockRejectedValue(new Error("Invalid code"));
+
+      const store = useAuthStore();
+      const result = await store.resetOwnerPassword({
+        email: "owner@example.com",
+        bootstrapCode: "bad-code",
+        password: "new-correct-horse",
+      });
+
+      expect(result).toBe(false);
+    });
+  });
+
   describe("logout", () => {
     it("clears user and local storage", async () => {
       const store = useAuthStore();

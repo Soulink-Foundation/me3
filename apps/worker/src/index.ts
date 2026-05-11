@@ -32,6 +32,11 @@ export { Me3UserAgent };
 
 type BootstrapBody = Partial<OwnerProfile> & { bootstrapCode?: string; password?: string };
 type LoginBody = { email?: string; password?: string };
+type BootstrapPasswordResetBody = {
+  email?: string;
+  bootstrapCode?: string;
+  password?: string;
+};
 type ChatBody = { message?: string };
 type AccountUpdateBody = { timezone?: unknown; locale?: unknown };
 type MailboxUpdateBody = {
@@ -230,6 +235,45 @@ app.post("/api/auth/login", async (c) => {
   }
 
   await setOwnerSession(c, owner.id);
+
+  return c.json({ ok: true, owner: toPublicOwner(owner) });
+});
+
+app.post("/api/auth/password-reset/bootstrap", async (c) => {
+  const body = await c.req
+    .json<BootstrapPasswordResetBody>()
+    .catch((): BootstrapPasswordResetBody => ({}));
+  const email = body.email?.trim().toLowerCase();
+  const password = body.password?.trim();
+
+  if (!c.env.ADMIN_BOOTSTRAP_CODE) {
+    return c.json({ ok: false, error: "Owner recovery is not configured" }, 503);
+  }
+
+  if (body.bootstrapCode !== c.env.ADMIN_BOOTSTRAP_CODE) {
+    return c.json({ ok: false, error: "Invalid bootstrap code" }, 401);
+  }
+
+  if (!email) {
+    return c.json({ ok: false, error: "Email is required" }, 400);
+  }
+
+  if (!password || password.length < 8) {
+    return c.json({ ok: false, error: "Password must be at least 8 characters" }, 400);
+  }
+
+  const owner = await getOwnerByEmail(c.env, email);
+  if (!owner) {
+    return c.json({ ok: false, error: "Owner account not found" }, 404);
+  }
+
+  await c.env.DB.prepare(
+    "UPDATE owner_profile SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+  )
+    .bind(await hashPassword(password), owner.id)
+    .run();
+
+  clearOwnerSession(c);
 
   return c.json({ ok: true, owner: toPublicOwner(owner) });
 });

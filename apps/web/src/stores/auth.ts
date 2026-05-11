@@ -33,6 +33,12 @@ export interface LoginOwnerInput {
   password: string;
 }
 
+export interface ResetOwnerPasswordInput {
+  email: string;
+  bootstrapCode: string;
+  password: string;
+}
+
 const STORAGE_KEY = "me3_core_owner_session";
 
 function ownerToUser(owner: OwnerProfile): User {
@@ -136,6 +142,24 @@ export const useAuthStore = defineStore("auth", () => {
     }
   }
 
+  async function resetOwnerPassword(input: ResetOwnerPasswordInput): Promise<boolean> {
+    try {
+      const response = await api.post<{ ok: boolean }>(
+        "/auth/password-reset/bootstrap",
+        {
+          email: input.email.trim(),
+          bootstrapCode: input.bootstrapCode,
+          password: input.password,
+        },
+      );
+
+      return response.ok;
+    } catch (error) {
+      console.error("Password reset error:", error);
+      return false;
+    }
+  }
+
   async function logout() {
     try {
       await api.post<{ ok: boolean }>("/auth/logout");
@@ -156,6 +180,7 @@ export const useAuthStore = defineStore("auth", () => {
     refreshSession,
     bootstrapOwner,
     loginOwner,
+    resetOwnerPassword,
     logout,
     setSession,
   };

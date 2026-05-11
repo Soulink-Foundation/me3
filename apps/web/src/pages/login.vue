@@ -33,14 +33,22 @@ const showPassword = ref(false);
 const loading = ref(false);
 const configLoading = ref(true);
 const ownerAuthConfigured = ref(false);
+const resetMode = ref(false);
 const error = ref("");
+const notice = ref("");
 
 const isSetupMode = computed(() => !ownerAuthConfigured.value);
+const isResetMode = computed(() => ownerAuthConfigured.value && resetMode.value);
+const useBootstrapCodeInput = computed(() => isSetupMode.value || isResetMode.value);
 
 const canSubmit = computed(
   () => {
     if (loading.value || configLoading.value) return false;
     if (email.value.trim().length === 0 || password.value.length === 0) return false;
+
+    if (isResetMode.value) {
+      return bootstrapCode.value.trim().length > 0 && password.value.length >= 8;
+    }
 
     if (!isSetupMode.value) return true;
 
@@ -117,6 +125,27 @@ async function submitAuth() {
 
   loading.value = true;
   error.value = "";
+  notice.value = "";
+
+  if (isResetMode.value) {
+    const success = await auth.resetOwnerPassword({
+      email: email.value,
+      bootstrapCode: bootstrapCode.value,
+      password: password.value,
+    });
+
+    if (success) {
+      resetMode.value = false;
+      bootstrapCode.value = "";
+      password.value = "";
+      notice.value = "Password reset. Sign in with your new password.";
+    } else {
+      error.value = "Reset failed. Check your email, bootstrap code, and new password.";
+    }
+
+    loading.value = false;
+    return;
+  }
 
   const success = isSetupMode.value
     ? await auth.bootstrapOwner({
@@ -143,6 +172,21 @@ async function submitAuth() {
   loading.value = false;
 }
 
+function startResetMode() {
+  resetMode.value = true;
+  bootstrapCode.value = "";
+  password.value = "";
+  error.value = "";
+  notice.value = "";
+}
+
+function cancelResetMode() {
+  resetMode.value = false;
+  bootstrapCode.value = "";
+  password.value = "";
+  error.value = "";
+}
+
 onMounted(loadConfig);
 </script>
 
@@ -152,6 +196,10 @@ onMounted(loadConfig);
       <BrandLogo class="login__logo" alt="me3" />
 
       <form class="login-form" @submit.prevent="submitAuth">
+        <p v-if="isResetMode" class="login-form__hint">
+          Reset owner access with this install's bootstrap code.
+        </p>
+
         <input
           v-if="isSetupMode"
           v-model="name"
@@ -177,10 +225,10 @@ onMounted(loadConfig);
           <input
             v-model="password"
             :type="showPassword ? 'text' : 'password'"
-            :autocomplete="isSetupMode ? 'new-password' : 'current-password'"
+            :autocomplete="isSetupMode || isResetMode ? 'new-password' : 'current-password'"
             class="input password-field__input"
             aria-label="Password"
-            placeholder="Password"
+            :placeholder="isResetMode ? 'New password' : 'Password'"
             required
           />
           <button
@@ -194,7 +242,7 @@ onMounted(loadConfig);
           </button>
         </div>
 
-        <div v-if="isSetupMode" class="password-field">
+        <div v-if="useBootstrapCodeInput" class="password-field">
           <input
             v-model="bootstrapCode"
             :type="showBootstrapCode ? 'text' : 'password'"
@@ -217,9 +265,37 @@ onMounted(loadConfig);
         </div>
 
         <button type="submit" class="button" :disabled="!canSubmit">
-          {{ loading ? "Opening..." : isSetupMode ? "Create account" : "Sign in" }}
+          {{
+            loading
+              ? isResetMode
+                ? "Resetting..."
+                : "Opening..."
+              : isSetupMode
+                ? "Create account"
+                : isResetMode
+                  ? "Reset password"
+                  : "Sign in"
+          }}
         </button>
 
+        <button
+          v-if="ownerAuthConfigured && !isResetMode"
+          class="text-button"
+          type="button"
+          @click="startResetMode"
+        >
+          Reset password with bootstrap code
+        </button>
+        <button
+          v-if="isResetMode"
+          class="text-button"
+          type="button"
+          @click="cancelResetMode"
+        >
+          Back to sign in
+        </button>
+
+        <p v-if="notice" class="notice">{{ notice }}</p>
         <p v-if="error" class="error">{{ error }}</p>
       </form>
     </main>
@@ -257,6 +333,14 @@ onMounted(loadConfig);
   flex-direction: column;
   gap: 12px;
   width: 100%;
+}
+
+.login-form__hint {
+  margin: 0;
+  color: var(--ui-text-muted, var(--color-text-muted));
+  font-size: 0.9rem;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .input {
@@ -339,6 +423,31 @@ onMounted(loadConfig);
 .button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.text-button {
+  border: 0;
+  background: transparent;
+  color: var(--ui-text-muted, var(--color-text-muted));
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.text-button:hover,
+.text-button:focus-visible {
+  color: var(--ui-text, var(--color-text));
+}
+
+.notice {
+  margin: 0;
+  color: #2e7d32;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-align: center;
 }
 
 .error {

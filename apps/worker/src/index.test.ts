@@ -69,6 +69,10 @@ function createEnv(): Env & {
               }
 
               if (sql.includes("UPDATE owner_profile") && state.owner) {
+                if (sql.includes("password_hash = ?")) {
+                  state.owner.password_hash = values[0] as string;
+                  return { success: true };
+                }
                 let valueIndex = 0;
                 if (sql.includes("timezone = ?")) {
                   state.owner.timezone = values[valueIndex] as string | null;
@@ -263,6 +267,11 @@ function cookieHeader(response: Response): string {
   return setCookie!.split(";")[0];
 }
 
+function responseCookieCleared(response: Response): boolean {
+  const setCookie = response.headers.get("set-cookie") || "";
+  return setCookie.includes("me3_core_session=") && setCookie.includes("Max-Age=0");
+}
+
 describe("ME3 Core Worker auth", () => {
   it("bootstraps the owner and sets an httpOnly session cookie", async () => {
     const env = createEnv();
@@ -374,6 +383,63 @@ describe("ME3 Core Worker auth", () => {
 
     expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("resets the owner password with the bootstrap code", async () => {
+    const env = createEnv();
+    await bootstrap(env);
+
+    const resetResponse = await app.fetch(
+      new Request("http://localhost/api/auth/password-reset/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "owner@example.com",
+          bootstrapCode: "owner-code",
+          password: "new-correct-horse",
+        }),
+      }),
+      env,
+    );
+
+    expect(resetResponse.status).toBe(200);
+    expect(responseCookieCleared(resetResponse)).toBe(true);
+
+    const loginResponse = await app.fetch(
+      new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "owner@example.com",
+          password: "new-correct-horse",
+        }),
+      }),
+      env,
+    );
+
+    expect(loginResponse.status).toBe(200);
+  });
+
+  it("rejects bootstrap password reset with a bad bootstrap code", async () => {
+    const env = createEnv();
+    await bootstrap(env);
+    const previousHash = env.owner?.password_hash;
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/auth/password-reset/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "owner@example.com",
+          bootstrapCode: "wrong-code",
+          password: "new-correct-horse",
+        }),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(env.owner?.password_hash).toBe(previousHash);
   });
 
   it("hydrates the owner session from the signed cookie", async () => {
