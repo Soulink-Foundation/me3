@@ -113,6 +113,13 @@ app.use(
   }),
 );
 
+app.use("*", async (c, next) => {
+  if (isPublicSiteHost(c.env, c.req.url)) {
+    return servePublicSiteRequest(c.env, c.req.raw);
+  }
+  await next();
+});
+
 app.get("/health", (c) => {
   return c.json({
     ok: true,
@@ -124,6 +131,10 @@ app.get("/health", (c) => {
       workersAi: Boolean(c.env.AI),
     },
     setupRequired: getSetupRequired(c.env),
+    hosts: {
+      admin: c.env.ME3_ADMIN_HOST || new URL(c.env.CORE_WEB_ORIGIN).hostname,
+      site: c.env.ME3_SITE_HOST || null,
+    },
   });
 });
 
@@ -133,6 +144,8 @@ app.get("/api/config", async (c) => {
   return c.json({
     apiOrigin: c.env.CORE_API_ORIGIN,
     webOrigin: c.env.CORE_WEB_ORIGIN,
+    adminHost: c.env.ME3_ADMIN_HOST || null,
+    siteHost: c.env.ME3_SITE_HOST || null,
     ai: {
       defaultProvider: c.env.ME3_AI_DEFAULT_PROVIDER ?? "not-configured",
       defaultModel: c.env.ME3_AI_DEFAULT_MODEL ?? "not-configured",
@@ -495,8 +508,8 @@ app.post("/api/sites/:username/upload-image", async (c) => {
 
   return c.json({
     ok: true,
-    path: `/preview/${site.username}/files/${filename}`,
-    url: `/preview/${site.username}/files/${filename}`,
+    path: `files/${filename}`,
+    url: `files/${filename}`,
   });
 });
 
@@ -526,8 +539,8 @@ app.post("/api/sites/:username/upload-page-image", async (c) => {
 
   return c.json({
     ok: true,
-    path: `/preview/${site.username}/files/${filename}`,
-    url: `/preview/${site.username}/files/${filename}`,
+    path: `files/${filename}`,
+    url: `files/${filename}`,
   });
 });
 
@@ -1241,20 +1254,17 @@ app.get("/preview/:username/*", async (c) => {
   if (!site) return c.html(renderNotFoundPage("Site not found"), 404);
 
   const requestedPath = c.req.path.replace(`/preview/${username}/`, "") || "index.html";
-  const publicPath = `public/${requestedPath.endsWith("/") ? `${requestedPath}index.html` : requestedPath}`;
-  const file =
-    (await getSiteFile(c.env, site.id, publicPath)) ||
-    (requestedPath === "index.html" ? await getSiteFile(c.env, site.id, "landing/index.html") : null);
-  if (!file) return c.html(renderNotFoundPage("Page not found"), 404);
+  return serveSiteFileResponse(c.env, site, requestedPath, false);
+});
 
-  return new Response(file.content, {
-    headers: {
-      "Content-Type": file.content_type,
-      "Cache-Control": file.content_type.startsWith("image/")
-        ? "public, max-age=31536000, immutable"
-        : "no-store",
-    },
-  });
+app.notFound((c) => {
+  if (isPublicSiteHost(c.env, c.req.url)) {
+    return servePublicSiteRequest(c.env, c.req.raw);
+  }
+  if (c.env.ASSETS) {
+    return c.env.ASSETS.fetch(c.req.raw);
+  }
+  return c.text("Not found", 404);
 });
 
 app.get("/.well-known/me.json", async (c) => {
@@ -1280,6 +1290,106 @@ function createEmptyPublishManifest(): PublishManifest {
     assetFiles: {},
     updatedAt: "",
   };
+}
+
+function normalizeHost(value: string | null | undefined): string {
+  return (value || "").trim().toLowerCase().replace(/:\d+$/, "");
+}
+
+function hostnameFromUrl(value: string | null | undefined): string {
+  if (!value) return "";
+  try {
+    return normalizeHost(new URL(value).hostname);
+  } catch {
+    return normalizeHost(value);
+  }
+}
+
+function isPublicSiteHost(env: Env, requestUrl: string): boolean {
+  const siteHost = normalizeHost(env.ME3_SITE_HOST);
+  if (!siteHost) return false;
+  const requestHost = hostnameFromUrl(requestUrl);
+  const adminHost = normalizeHost(env.ME3_ADMIN_HOST) || hostnameFromUrl(env.CORE_WEB_ORIGIN);
+  return requestHost === siteHost && requestHost !== adminHost;
+}
+
+async function servePublicSiteRequest(env: Env, request: Request): Promise<Response> {
+  const site = await getPublicSiteForHost(env, new URL(request.url).hostname);
+  if (!site) return new Response(renderNotFoundPage("Site not configured"), {
+    status: 404,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+
+  const requestedPath = new URL(request.url).pathname.replace(/^\/+/, "") || "index.html";
+  return serveSiteFileResponse(env, site, requestedPath, true);
+}
+
+async function getPublicSiteForHost(env: Env, rawHost: string): Promise<DbSite | null> {
+  const configuredUsername = normalizeUsername(env.ME3_SITE_USERNAME);
+  if (configuredUsername) {
+    const site = await getSiteByUsername(env, configuredUsername);
+    if (site) return site;
+  }
+
+  const host = normalizeHost(rawHost);
+  const customDomainSite = await env.DB.prepare(
+    `SELECT id, user_id, username, site_type, template_id, custom_domain,
+            custom_domain_status, custom_domain_cf_id, created_at, updated_at, published_at
+     FROM sites
+     WHERE lower(custom_domain) = ?
+     ORDER BY created_at ASC
+     LIMIT 1`,
+  )
+    .bind(host)
+    .first<DbSite>();
+  if (customDomainSite) return customDomainSite;
+
+  return (
+    (await env.DB.prepare(
+      `SELECT id, user_id, username, site_type, template_id, custom_domain,
+              custom_domain_status, custom_domain_cf_id, created_at, updated_at, published_at
+       FROM sites
+       WHERE COALESCE(site_type, 'profile') = 'profile'
+       ORDER BY created_at ASC
+       LIMIT 1`,
+    )
+      .first<DbSite>()) || null
+  );
+}
+
+async function serveSiteFileResponse(
+  env: Env,
+  site: DbSite,
+  rawPath: string,
+  requirePublished: boolean,
+): Promise<Response> {
+  if (requirePublished && !site.published_at) {
+    return new Response(renderNotFoundPage("Site not published"), {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
+
+  const requestedPath = normalizeSiteFileName(rawPath) || "index.html";
+  const publicPath = `public/${requestedPath.endsWith("/") ? `${requestedPath}index.html` : requestedPath}`;
+  const file =
+    (await getSiteFile(env, site.id, publicPath)) ||
+    (requestedPath === "index.html" ? await getSiteFile(env, site.id, "landing/index.html") : null);
+  if (!file) {
+    return new Response(renderNotFoundPage("Page not found"), {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
+
+  return new Response(file.content, {
+    headers: {
+      "Content-Type": file.content_type,
+      "Cache-Control": file.content_type.startsWith("image/")
+        ? "public, max-age=31536000, immutable"
+        : "no-store",
+    },
+  });
 }
 
 async function getSiteForOwner(env: Env, ownerId: string, rawUsername: string): Promise<DbSite | null> {

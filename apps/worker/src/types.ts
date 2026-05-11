@@ -2,10 +2,14 @@ export interface Env {
   DB: D1Database;
   ME3_USER_AGENT?: DurableObjectNamespace;
   AI?: Ai;
+  ASSETS?: Fetcher;
 
   ENVIRONMENT: string;
   CORE_WEB_ORIGIN: string;
   CORE_API_ORIGIN: string;
+  ME3_ADMIN_HOST?: string;
+  ME3_SITE_HOST?: string;
+  ME3_SITE_USERNAME?: string;
 
   JWT_SECRET?: string;
   TOKEN_ENCRYPTION_KEY?: string;

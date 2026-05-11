@@ -95,13 +95,40 @@ The root `wrangler.toml` is the deploy-template config for Cloudflare Workers Bu
 - Worker entrypoint: `apps/worker/src/index.ts`
 - Static web assets: `apps/web/dist`
 - SPA fallback for copied Vue routes
-- Worker-first routes for `/api/*`, `/health`, and `/.well-known/*`
+- Worker-first routing for all paths, so one Worker can route by hostname
 - D1 binding and migration directory
 - `ME3_USER_AGENT` Durable Object namespace
 - optional Workers AI binding
 - public origin/model defaults
 
 Cloudflare should provision supported resources from the Wrangler config during template deployment. Required install secrets are described in `package.json` and listed in `apps/worker/.dev.vars.example`.
+
+### Recommended Cloudflare Domains
+
+ME3 Core is designed to run one Worker on two custom domains:
+
+- `www.customdomain.com` serves the public ME3 site.
+- `me3.customdomain.com` serves the private admin app, login, and `/api/*`.
+
+Set these vars in `wrangler.toml` or in the Cloudflare dashboard:
+
+```toml
+CORE_WEB_ORIGIN = "https://me3.customdomain.com"
+CORE_API_ORIGIN = "https://me3.customdomain.com"
+ME3_ADMIN_HOST = "me3.customdomain.com"
+ME3_SITE_HOST = "www.customdomain.com"
+# Optional: force the public host to serve a specific claimed site username.
+# ME3_SITE_USERNAME = "owner"
+```
+
+Then attach both hostnames to the same Worker as Cloudflare Worker custom domains:
+
+```text
+www.customdomain.com  -> me3 Worker
+me3.customdomain.com  -> me3 Worker
+```
+
+If the owner wants the apex domain too, configure Cloudflare to redirect `customdomain.com` to `www.customdomain.com`. Core keeps admin and public-site routing separate by hostname: requests on `ME3_SITE_HOST` serve the published D1-backed site files, while requests on `ME3_ADMIN_HOST` serve the admin SPA and authenticated API.
 
 Manual deploy shape:
 
