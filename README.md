@@ -1,4 +1,4 @@
-# me3-core
+# me3
 
 Private extraction scaffold for the installable ME3 Core personal/business AI assistant.
 
@@ -23,9 +23,33 @@ Plugin-owned config is excluded from the boot slice until plugin packages are in
 
 ```bash
 pnpm install
+pnpm setup:dev-vars
+pnpm --filter @me3-core/worker db:migrate:local
+pnpm verify:local-boot
 pnpm build
 pnpm --filter @me3-core/worker dev
 pnpm --filter @me3-core/web dev
 ```
 
-Copy `apps/worker/.dev.vars.example` to `apps/worker/.dev.vars` for local development and generate real values locally. Never commit real secrets.
+`pnpm setup:dev-vars` creates `apps/worker/.dev.vars` with generated local-only bootstrap values. Never commit real secrets.
+
+`pnpm verify:local-boot` is the extraction acceptance gate for the first slice. It applies the local D1 migration, starts the Worker and web shell, checks `/health`, `/api/config`, `/api/admin/bootstrap`, `/api/assistant/chat`, `/.well-known/me.json`, and verifies that the web shell responds.
+
+## Install Config
+
+`apps/worker/wrangler.core.example.toml` is the first install-template config. It includes only Core bindings and local defaults:
+
+- `DB` D1 binding for Core tables
+- `ME3_USER_AGENT` Durable Object binding
+- optional `AI` Workers AI binding
+- public origin/model vars for local boot
+
+It intentionally excludes production `me3.app` routes, production Cloudflare account/zone IDs, plugin queues, hosted subscription billing config, and real provider secrets.
+
+`apps/worker/.dev.vars.example` lists secret names only. The first required generated local values are:
+
+- `JWT_SECRET`
+- `TOKEN_ENCRYPTION_KEY`
+- `ADMIN_BOOTSTRAP_CODE`
+
+Owner-supplied providers such as OpenAI, Anthropic, Postmark, Stripe, OAuth, and search remain blank until an install owner configures them.
