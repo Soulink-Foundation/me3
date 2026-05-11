@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import app from "./index";
-import type { DbMailboxAlias, Env, OwnerProfile } from "./types";
+import type {
+  DbAiModelDefault,
+  DbAiProviderCredential,
+  DbMailboxAlias,
+  Env,
+  OwnerProfile,
+} from "./types";
 
 type StoredMessage = {
   id: string;
@@ -33,12 +39,16 @@ function createEnv(): Env & {
   owner: StoredOwner | null;
   messages: StoredMessage[];
   mailbox: DbMailboxAlias | null;
+  aiCredentials: DbAiProviderCredential[];
+  aiDefaults: DbAiModelDefault[];
   telegramConnection: StoredTelegramConnection | null;
 } {
   const state = {
     owner: null as StoredOwner | null,
     messages: [] as StoredMessage[],
     mailbox: null as DbMailboxAlias | null,
+    aiCredentials: [] as DbAiProviderCredential[],
+    aiDefaults: [] as DbAiModelDefault[],
     telegramConnection: null as StoredTelegramConnection | null,
   };
 
@@ -94,6 +104,73 @@ function createEnv(): Env & {
                   role: values[2] as string,
                   content: values[3] as string,
                 });
+              }
+
+              if (sql.includes("INSERT INTO ai_provider_credentials")) {
+                const existingIndex = state.aiCredentials.findIndex(
+                  (credential) =>
+                    credential.user_id === values[0] &&
+                    credential.provider_id === values[1],
+                );
+                const credential: DbAiProviderCredential = {
+                  user_id: values[0] as string,
+                  provider_id: values[1] as string,
+                  encrypted_api_key: values[2] as string,
+                  api_key_hint: values[3] as string,
+                  api_key_updated_at: values[4] as string,
+                  created_at: values[5] as string,
+                  updated_at: values[6] as string,
+                };
+                if (existingIndex >= 0) {
+                  state.aiCredentials[existingIndex] = {
+                    ...state.aiCredentials[existingIndex],
+                    ...credential,
+                    created_at: state.aiCredentials[existingIndex].created_at,
+                  };
+                } else {
+                  state.aiCredentials.push(credential);
+                }
+              }
+
+              if (sql.includes("DELETE FROM ai_provider_credentials")) {
+                state.aiCredentials = state.aiCredentials.filter(
+                  (credential) =>
+                    credential.user_id !== values[0] ||
+                    credential.provider_id !== values[1],
+                );
+              }
+
+              if (sql.includes("INSERT INTO ai_model_defaults")) {
+                const existingIndex = state.aiDefaults.findIndex(
+                  (defaultRow) =>
+                    defaultRow.user_id === values[0] &&
+                    defaultRow.use_case === values[1],
+                );
+                const defaultRow: DbAiModelDefault = {
+                  user_id: values[0] as string,
+                  use_case: values[1] as string,
+                  provider_id: values[2] as string,
+                  model: values[3] as string,
+                  created_at: values[4] as string,
+                  updated_at: values[5] as string,
+                };
+                if (existingIndex >= 0) {
+                  state.aiDefaults[existingIndex] = {
+                    ...state.aiDefaults[existingIndex],
+                    ...defaultRow,
+                    created_at: state.aiDefaults[existingIndex].created_at,
+                  };
+                } else {
+                  state.aiDefaults.push(defaultRow);
+                }
+              }
+
+              if (sql.includes("DELETE FROM ai_model_defaults")) {
+                state.aiDefaults = state.aiDefaults.filter(
+                  (defaultRow) =>
+                    defaultRow.user_id !== values[0] ||
+                    defaultRow.use_case !== values[1],
+                );
               }
 
               if (sql.includes("INSERT INTO mailbox_aliases")) {
@@ -200,6 +277,20 @@ function createEnv(): Env & {
               return null;
             },
             async all<T>() {
+              if (sql.includes("FROM ai_provider_credentials")) {
+                return {
+                  results: state.aiCredentials.filter(
+                    (credential) => credential.user_id === values[0],
+                  ) as T[],
+                };
+              }
+              if (sql.includes("FROM ai_model_defaults")) {
+                return {
+                  results: state.aiDefaults.filter(
+                    (defaultRow) => defaultRow.user_id === values[0],
+                  ) as T[],
+                };
+              }
               if (sql.includes("FROM agent_channel_events")) {
                 return { results: [] as T[] };
               }
@@ -226,6 +317,12 @@ function createEnv(): Env & {
     },
     set mailbox(value: DbMailboxAlias | null) {
       state.mailbox = value;
+    },
+    get aiCredentials() {
+      return state.aiCredentials;
+    },
+    get aiDefaults() {
+      return state.aiDefaults;
     },
     get telegramConnection() {
       return state.telegramConnection;
@@ -585,6 +682,113 @@ describe("ME3 Core Worker auth", () => {
     const env = createEnv();
 
     const response = await app.fetch(new Request("http://localhost/api/plugins"), env);
+
+    expect(response.status).toBe(401);
+  });
+
+  it("loads AI provider settings for the signed-in owner", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/ai-settings", {
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const body = (await response.json()) as {
+      encryptionConfigured: boolean;
+      providers: Array<{ id: string; configured: boolean; setupRequired: boolean }>;
+      routes: Array<{ id: string; providerId: string; model: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.encryptionConfigured).toBe(true);
+    expect(body.providers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "openai",
+          configured: false,
+          setupRequired: true,
+        }),
+        expect.objectContaining({
+          id: "workers-ai",
+          configured: false,
+          setupRequired: true,
+        }),
+      ]),
+    );
+    expect(body.routes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "chat",
+          providerId: "workers-ai",
+          model: "@cf/meta/llama-3.1-8b-instruct",
+        }),
+      ]),
+    );
+  });
+
+  it("saves encrypted AI provider keys and model defaults", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/ai-settings", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: session,
+        },
+        body: JSON.stringify({
+          providers: [{ id: "openai", apiKey: "sk-test-secret-1234" }],
+          defaults: {
+            chat: { providerId: "openai", model: "gpt-4.1-mini" },
+            reasoning: { providerId: "openai", model: "o4-mini" },
+            extraction: { providerId: "openai", model: "gpt-4.1-mini" },
+          },
+        }),
+      }),
+      env,
+    );
+    const body = (await response.json()) as {
+      providers: Array<{ id: string; configured: boolean; source: string; keyHint: string }>;
+      defaults: { chat: { providerId: string; model: string; configured: boolean } };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.providers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "openai",
+          configured: true,
+          source: "stored",
+          keyHint: "***1234",
+        }),
+      ]),
+    );
+    expect(body.defaults.chat).toMatchObject({
+      providerId: "openai",
+      model: "gpt-4.1-mini",
+      configured: true,
+    });
+    expect(env.aiCredentials[0].encrypted_api_key).toMatch(/^v1\./);
+    expect(env.aiCredentials[0].encrypted_api_key).not.toContain("sk-test-secret-1234");
+    expect(env.aiDefaults).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          use_case: "chat",
+          provider_id: "openai",
+          model: "gpt-4.1-mini",
+        }),
+      ]),
+    );
+  });
+
+  it("requires owner auth for AI provider settings", async () => {
+    const env = createEnv();
+
+    const response = await app.fetch(new Request("http://localhost/api/ai-settings"), env);
 
     expect(response.status).toBe(401);
   });

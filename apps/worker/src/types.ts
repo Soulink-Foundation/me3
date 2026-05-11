@@ -227,6 +227,25 @@ export interface DbMailboxMessage {
   created_at: string;
 }
 
+export interface DbAiProviderCredential {
+  user_id: string;
+  provider_id: string;
+  encrypted_api_key: string | null;
+  api_key_hint: string | null;
+  api_key_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DbAiModelDefault {
+  user_id: string;
+  use_case: string;
+  provider_id: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DbAgentChannelConnection {
   id: string;
   user_id: string;

@@ -152,6 +152,44 @@ type PluginsResponse = {
   plugins: PluginRecord[];
 };
 
+type AiRouteId = "default" | "chat" | "reasoning" | "extraction";
+
+type AiProviderRecord = {
+  id: string;
+  label: string;
+  description: string;
+  setupLabel: string;
+  supportsApiKey: boolean;
+  secretLabel: string | null;
+  configured: boolean;
+  setupRequired: boolean;
+  statusLabel: string;
+  source: "binding" | "environment" | "stored" | "not_configured";
+  keyHint: string | null;
+  keyUpdatedAt: string | null;
+  recommendedModels: Record<AiRouteId, string>;
+};
+
+type AiRouteRecord = {
+  id: AiRouteId;
+  label: string;
+  providerId: string;
+  providerLabel: string;
+  model: string;
+  configured: boolean;
+  setupRequired: boolean;
+  source: "stored" | "environment" | "recommended";
+};
+
+type AiSettingsResponse = {
+  encryptionConfigured: boolean;
+  providers: AiProviderRecord[];
+  routes: AiRouteRecord[];
+  defaults: Record<AiRouteId, AiRouteRecord>;
+};
+
+type AiRouteInputs = Record<AiRouteId, { providerId: string; model: string }>;
+
 const auth = useAuthStore();
 const route = useRoute();
 const router = useRouter();
@@ -185,6 +223,15 @@ const pluginsLoading = ref(false);
 const plugins = ref<PluginRecord[]>([]);
 const pluginCatalogVersion = ref("");
 const pluginsError = ref<string | null>(null);
+const aiSettingsLoading = ref(false);
+const aiSettingsSaving = ref(false);
+const aiProviders = ref<AiProviderRecord[]>([]);
+const aiRoutes = ref<AiRouteRecord[]>([]);
+const aiEncryptionConfigured = ref(false);
+const aiProviderKeyInputs = ref<Record<string, string>>({});
+const aiRouteInputs = ref<AiRouteInputs>(createEmptyAiRouteInputs());
+const aiSettingsMessage = ref<string | null>(null);
+const aiSettingsError = ref<string | null>(null);
 
 const telegramPanelRef = ref<InstanceType<typeof TelegramConnectPanel> | null>(
   null,
@@ -195,6 +242,7 @@ const openSection = ref({
   regional: false,
   mailbox: false,
   telegram: false,
+  ai: false,
   plugins: false,
 });
 
@@ -297,6 +345,43 @@ const pluginSummaryStatusClass = computed(() => {
   }
   return "available";
 });
+
+const aiConfiguredProviderCount = computed(
+  () => aiProviders.value.filter((provider) => provider.configured).length,
+);
+
+const aiSettingsSummaryLabel = computed(() => {
+  if (aiSettingsLoading.value) return "Loading";
+  if (aiConfiguredProviderCount.value > 0) {
+    return `${aiConfiguredProviderCount.value} configured`;
+  }
+  return "Setup required";
+});
+
+const aiSettingsSummaryStatusClass = computed(() =>
+  aiConfiguredProviderCount.value > 0 ? "active" : "setup_required",
+);
+
+const aiProviderKeyInputCount = computed(
+  () =>
+    Object.values(aiProviderKeyInputs.value).filter((value) => value.trim())
+      .length,
+);
+
+const aiRoutesInvalid = computed(() =>
+  aiRoutes.value.some((route) => {
+    const input = aiRouteInputs.value[route.id];
+    return !input?.providerId || !input.model.trim();
+  }),
+);
+
+const aiSettingsSaveDisabled = computed(
+  () =>
+    aiSettingsSaving.value ||
+    aiSettingsLoading.value ||
+    aiRoutesInvalid.value ||
+    (aiProviderKeyInputCount.value > 0 && !aiEncryptionConfigured.value),
+);
 
 function syncAccount(response: AccountResponse) {
   auth.setSession({
@@ -460,6 +545,96 @@ async function loadPlugins() {
   }
 }
 
+function createEmptyAiRouteInputs(): AiRouteInputs {
+  return {
+    default: { providerId: "", model: "" },
+    chat: { providerId: "", model: "" },
+    reasoning: { providerId: "", model: "" },
+    extraction: { providerId: "", model: "" },
+  };
+}
+
+function syncAiSettings(response: AiSettingsResponse) {
+  aiProviders.value = response.providers || [];
+  aiRoutes.value = response.routes || [];
+  aiEncryptionConfigured.value = response.encryptionConfigured;
+  aiProviderKeyInputs.value = Object.fromEntries(
+    aiProviders.value
+      .filter((provider) => provider.supportsApiKey)
+      .map((provider) => [provider.id, ""]),
+  );
+
+  const nextRouteInputs = createEmptyAiRouteInputs();
+  for (const route of aiRoutes.value) {
+    nextRouteInputs[route.id] = {
+      providerId: route.providerId,
+      model: route.model,
+    };
+  }
+  aiRouteInputs.value = nextRouteInputs;
+}
+
+async function loadAiSettings() {
+  aiSettingsLoading.value = true;
+  aiSettingsError.value = null;
+
+  try {
+    const response = await api.get<AiSettingsResponse>("/ai-settings");
+    syncAiSettings(response);
+  } catch (e: any) {
+    aiSettingsError.value = e.message || "Failed to load AI provider settings";
+  } finally {
+    aiSettingsLoading.value = false;
+  }
+}
+
+async function saveAiSettings() {
+  if (aiSettingsSaveDisabled.value) return;
+
+  aiSettingsSaving.value = true;
+  aiSettingsMessage.value = null;
+  aiSettingsError.value = null;
+
+  const providers = Object.entries(aiProviderKeyInputs.value)
+    .map(([id, apiKey]) => ({ id, apiKey: apiKey.trim() }))
+    .filter((provider) => provider.apiKey);
+  const defaults = Object.fromEntries(
+    aiRoutes.value.map((route) => [
+      route.id,
+      {
+        providerId: aiRouteInputs.value[route.id].providerId,
+        model: aiRouteInputs.value[route.id].model.trim(),
+      },
+    ]),
+  );
+
+  try {
+    const response = await api.put<AiSettingsResponse>("/ai-settings", {
+      providers,
+      defaults,
+    });
+    syncAiSettings(response);
+    aiSettingsMessage.value = "AI provider settings saved.";
+  } catch (e: any) {
+    aiSettingsError.value = e.message || "Failed to save AI provider settings";
+  } finally {
+    aiSettingsSaving.value = false;
+  }
+}
+
+function aiProviderSourceLabel(provider: AiProviderRecord): string {
+  switch (provider.source) {
+    case "binding":
+      return "Binding";
+    case "environment":
+      return "Environment";
+    case "stored":
+      return provider.keyHint ? `Stored ${provider.keyHint}` : "Stored";
+    default:
+      return provider.setupLabel;
+  }
+}
+
 function formatDateTime(value: string | null): string {
   if (!value) return "Not yet";
   const date = new Date(value);
@@ -508,6 +683,7 @@ async function deleteAccount() {
 onMounted(async () => {
   await loadAccount();
   void loadMailbox();
+  void loadAiSettings();
   void loadPlugins();
   if (route.query.section === "telegram") {
     openSection.value.telegram = true;
@@ -517,6 +693,9 @@ onMounted(async () => {
   }
   if (route.query.section === "plugins") {
     openSection.value.plugins = true;
+  }
+  if (route.query.section === "ai" || route.query.section === "providers") {
+    openSection.value.ai = true;
   }
 });
 </script>
@@ -893,6 +1072,158 @@ onMounted(async () => {
                 route.query.section === 'telegram'
               "
             />
+          </div>
+        </section>
+
+        <section class="card accordion-card">
+          <button
+            id="account-trigger-ai"
+            class="accordion-trigger"
+            type="button"
+            :aria-expanded="openSection.ai"
+            aria-controls="account-panel-ai"
+            @click="openSection.ai = !openSection.ai"
+          >
+            <span class="accordion-title-wrap accordion-title-flex">
+              <h2>AI model providers</h2>
+              <span class="status-badge" :class="aiSettingsSummaryStatusClass">
+                {{ aiSettingsSummaryLabel }}
+              </span>
+              <span class="accordion-header-hint">
+                Chat, extraction, and reasoning defaults
+              </span>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true">▼</span>
+          </button>
+          <div
+            id="account-panel-ai"
+            class="accordion-panel"
+            role="region"
+            aria-labelledby="account-trigger-ai"
+            :hidden="!openSection.ai"
+          >
+            <div v-if="aiSettingsLoading" class="status-row">
+              Loading AI provider settings...
+            </div>
+
+            <template v-else>
+              <p v-if="aiSettingsError" class="error">
+                {{ aiSettingsError }}
+              </p>
+
+              <p class="hint">
+                Keep owner-supplied provider keys in encrypted Core storage and
+                choose the default model route for each agent workload. Workers
+                AI uses the local Cloudflare binding when it is available.
+              </p>
+
+              <p
+                v-if="!aiEncryptionConfigured"
+                class="error"
+              >
+                TOKEN_ENCRYPTION_KEY is required before API keys can be saved.
+              </p>
+
+              <div class="ai-provider-list">
+                <article
+                  v-for="provider in aiProviders"
+                  :key="provider.id"
+                  class="ai-provider-row"
+                >
+                  <div class="ai-provider-row__header">
+                    <div class="ai-provider-copy">
+                      <h3>{{ provider.label }}</h3>
+                      <p>{{ provider.description }}</p>
+                    </div>
+                    <div class="plugin-row__badges">
+                      <span
+                        class="status-badge compact"
+                        :class="provider.configured ? 'active' : 'setup_required'"
+                      >
+                        {{ provider.statusLabel }}
+                      </span>
+                      <span class="status-pill">
+                        {{ aiProviderSourceLabel(provider) }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <label v-if="provider.supportsApiKey" class="field">
+                    <span>{{ provider.secretLabel || "API key" }}</span>
+                    <input
+                      v-model="aiProviderKeyInputs[provider.id]"
+                      class="input"
+                      type="password"
+                      autocomplete="off"
+                      spellcheck="false"
+                      :placeholder="
+                        provider.configured
+                          ? 'Paste a new key to replace the stored value'
+                          : 'Paste provider API key'
+                      "
+                    />
+                    <p class="field-hint">
+                      Existing keys are never returned to the browser.
+                    </p>
+                  </label>
+                </article>
+              </div>
+
+              <div class="ai-routes-panel">
+                <div class="mailbox-panel-head">
+                  <h3>Model defaults</h3>
+                  <span class="provider-meta">
+                    {{ aiRoutes.length }} routes
+                  </span>
+                </div>
+
+                <div class="ai-route-list">
+                  <label
+                    v-for="routeRecord in aiRoutes"
+                    :key="routeRecord.id"
+                    class="field ai-route-row"
+                  >
+                    <span>{{ routeRecord.label }}</span>
+                    <div class="ai-route-fields">
+                      <select
+                        v-model="aiRouteInputs[routeRecord.id].providerId"
+                        class="input"
+                      >
+                        <option
+                          v-for="provider in aiProviders"
+                          :key="provider.id"
+                          :value="provider.id"
+                        >
+                          {{ provider.label }}
+                        </option>
+                      </select>
+                      <input
+                        v-model="aiRouteInputs[routeRecord.id].model"
+                        class="input"
+                        type="text"
+                        placeholder="Model name"
+                        spellcheck="false"
+                      />
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div class="button-row">
+                <button
+                  class="button primary"
+                  type="button"
+                  :disabled="aiSettingsSaveDisabled"
+                  @click="saveAiSettings"
+                >
+                  {{ aiSettingsSaving ? "Saving..." : "Save AI settings" }}
+                </button>
+              </div>
+
+              <p v-if="aiSettingsMessage" class="success">
+                {{ aiSettingsMessage }}
+              </p>
+            </template>
           </div>
         </section>
 
@@ -1427,6 +1758,7 @@ h1 {
   gap: 8px;
 }
 
+
 .plugin-meta-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1538,6 +1870,77 @@ h1 {
   color: var(--color-text-muted);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.ai-provider-list {
+  display: grid;
+  gap: 14px;
+}
+
+.ai-provider-row {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--ui-border, var(--color-border));
+  border-radius: var(--ui-radius-md, 12px);
+  background: var(--ui-surface-muted, var(--color-bg-subtle));
+}
+
+.ai-provider-row__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.ai-provider-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-provider-copy h3,
+.ai-routes-panel h3 {
+  margin: 0;
+  color: var(--ui-text, var(--color-text));
+  font-size: 16px;
+}
+
+.ai-provider-copy p {
+  margin: 0;
+  color: var(--ui-text-muted, var(--color-text-muted));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ai-routes-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--ui-border, var(--color-border));
+  border-radius: var(--ui-radius-md, 12px);
+}
+
+.ai-route-list {
+  display: grid;
+  gap: 12px;
+}
+
+.ai-route-row {
+  padding-top: 12px;
+  border-top: 1px solid var(--ui-border, var(--color-border));
+}
+
+.ai-route-row:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.ai-route-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 10px;
 }
 
 .recommended-card {
@@ -1833,6 +2236,7 @@ h1 {
   .email-row,
   .mailbox-source-row,
   .activity-row,
+  .ai-provider-row__header,
   .plugin-row__header {
     flex-direction: column;
     align-items: flex-start;
@@ -1844,6 +2248,10 @@ h1 {
 
   .plugin-meta-grid,
   .plugin-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-route-fields {
     grid-template-columns: 1fr;
   }
 

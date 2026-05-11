@@ -3,6 +3,13 @@ import { cors } from "hono/cors";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { Me3UserAgent } from "./user-agent";
 import {
+  AiSettingsInputError,
+  getAiRoutingSummary,
+  getAiSettings,
+  hasConfiguredAiProvider,
+  updateAiSettings,
+} from "./ai-providers";
+import {
   CORE_PLUGIN_CATALOG_VERSION,
   listCorePluginRecords,
 } from "./plugins";
@@ -130,7 +137,7 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-app.get("/health", (c) => {
+app.get("/health", async (c) => {
   return c.json({
     ok: true,
     service: "me3-core",
@@ -140,16 +147,17 @@ app.get("/health", (c) => {
       userAgent: Boolean(c.env.ME3_USER_AGENT),
       workersAi: Boolean(c.env.AI),
     },
-    setupRequired: getSetupRequired(c.env),
     hosts: {
       admin: c.env.ME3_ADMIN_HOST || new URL(c.env.CORE_WEB_ORIGIN).hostname,
       site: c.env.ME3_SITE_HOST || null,
     },
+    setupRequired: await getSetupRequired(c.env),
   });
 });
 
 app.get("/api/config", async (c) => {
   const authConfigured = await getOwnerAuthConfigured(c.env);
+  const aiRoutes = await getAiRoutingSummary(c.env, "owner");
 
   return c.json({
     apiOrigin: c.env.CORE_API_ORIGIN,
@@ -157,12 +165,16 @@ app.get("/api/config", async (c) => {
     adminHost: c.env.ME3_ADMIN_HOST || null,
     siteHost: c.env.ME3_SITE_HOST || null,
     ai: {
-      defaultProvider: c.env.ME3_AI_DEFAULT_PROVIDER ?? "not-configured",
-      defaultModel: c.env.ME3_AI_DEFAULT_MODEL ?? "not-configured",
-      chatProvider: c.env.ME3_AI_CHAT_PROVIDER ?? "not-configured",
-      chatModel: c.env.ME3_AI_CHAT_MODEL ?? "not-configured",
+      defaultProvider: aiRoutes.default.providerId,
+      defaultModel: aiRoutes.default.model,
+      chatProvider: aiRoutes.chat.providerId,
+      chatModel: aiRoutes.chat.model,
+      reasoningProvider: aiRoutes.reasoning.providerId,
+      reasoningModel: aiRoutes.reasoning.model,
+      extractionProvider: aiRoutes.extraction.providerId,
+      extractionModel: aiRoutes.extraction.model,
     },
-    setupRequired: getSetupRequired(c.env),
+    setupRequired: await getSetupRequired(c.env),
     ownerAuthConfigured: authConfigured,
   });
 });
@@ -321,7 +333,7 @@ app.post("/api/assistant/chat", async (c) => {
   return c.json({
     ok: true,
     reply: "ME3 Core assistant shell is booted. Model execution will be wired in the first bootable slice.",
-    setupRequired: getSetupRequired(c.env),
+    setupRequired: await getSetupRequired(c.env, ownerId),
   });
 });
 
@@ -343,6 +355,28 @@ app.get("/api/plugins", async (c) => {
     catalogVersion: CORE_PLUGIN_CATALOG_VERSION,
     plugins: await listCorePluginRecords(c.env),
   });
+});
+
+app.get("/api/ai-settings", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  return c.json(await getAiSettings(c.env, ownerId));
+});
+
+app.put("/api/ai-settings", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const body = await c.req.json<unknown>().catch((): unknown => ({}));
+  try {
+    return c.json(await updateAiSettings(c.env, ownerId, body));
+  } catch (error) {
+    if (error instanceof AiSettingsInputError) {
+      return c.json({ error: error.message }, error.status as any);
+    }
+    throw error;
+  }
 });
 
 app.put("/api/account", async (c) => {
@@ -3149,12 +3183,12 @@ function shouldUseSecureCookie(env: Env): boolean {
   return env.ENVIRONMENT !== "local" && env.CORE_API_ORIGIN.startsWith("https://");
 }
 
-function getSetupRequired(env: Env): string[] {
+async function getSetupRequired(env: Env, ownerId = "owner"): Promise<string[]> {
   const missing: string[] = [];
 
   if (!env.JWT_SECRET) missing.push("JWT_SECRET");
   if (!env.TOKEN_ENCRYPTION_KEY) missing.push("TOKEN_ENCRYPTION_KEY");
-  if (!env.OPENAI_API_KEY && !env.ANTHROPIC_API_KEY && !env.AI) {
+  if (!(await hasConfiguredAiProvider(env, ownerId))) {
     missing.push("AI_PROVIDER");
   }
 
