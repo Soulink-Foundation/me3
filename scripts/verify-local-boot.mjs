@@ -57,18 +57,30 @@ async function main() {
   assert(typeof config.apiOrigin === "string", "Core API origin missing");
 
   const bootstrapCode = readDevVar("ADMIN_BOOTSTRAP_CODE");
-  const bootstrap = await postJson(`${workerOrigin}/api/admin/bootstrap`, {
+  const bootstrapResponse = await postJson(`${workerOrigin}/api/admin/bootstrap`, {
     bootstrapCode,
     email: "owner@example.test",
     name: "ME3 Core Owner",
     username: "owner",
     bio: "Local boot verification owner.",
   });
+  const bootstrap = bootstrapResponse.body;
   assert(bootstrap.ok === true, "Admin bootstrap failed");
+  const sessionCookie = bootstrapResponse.cookie;
+  assert(sessionCookie, "Admin bootstrap did not set a session cookie");
 
-  const chat = await postJson(`${workerOrigin}/api/assistant/chat`, {
-    message: "Boot check",
-  });
+  const me = await fetchJson(`${workerOrigin}/api/auth/me`, sessionCookie);
+  assert(me.ok === true && me.user?.id === "owner", "Auth session hydration failed");
+
+  const chat = (
+    await postJson(
+      `${workerOrigin}/api/assistant/chat`,
+      {
+        message: "Boot check",
+      },
+      sessionCookie,
+    )
+  ).body;
   assert(chat.ok === true, "Assistant chat smoke check failed");
   assert(typeof chat.reply === "string" && chat.reply.length > 0, "Assistant reply was empty");
 
@@ -159,33 +171,54 @@ async function waitFor(fn, label) {
   throw new Error(`Timed out waiting for ${label}: ${lastError?.message ?? "unknown error"}`);
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url);
+async function fetchJson(url, cookie) {
+  const response = await fetch(url, {
+    headers: cookie ? { Cookie: cookie } : undefined,
+  });
   assert(response.ok, `${url} returned ${response.status}`);
   return response.json();
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, cookie) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
     body: JSON.stringify(body),
   });
   if (!response.ok) {
     throw new Error(`${url} returned ${response.status}: ${await response.text()}`);
   }
-  return response.json();
+  const setCookie = response.headers.get("set-cookie");
+  return {
+    body: await response.json(),
+    cookie: setCookie?.split(";")[0] ?? "",
+  };
 }
 
 function readDevVar(name) {
   const file = resolve(root, "apps/worker/.dev.vars");
   if (!existsSync(file)) return "";
 
-  const line = readFileSync(file, "utf8")
+  const lines = readFileSync(file, "utf8")
     .split(/\r?\n/)
-    .find((entry) => entry.startsWith(`${name}=`));
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && !entry.startsWith("#") && entry.startsWith(`${name}=`));
 
-  return line?.slice(name.length + 1) ?? "";
+  const line = lines.at(-1);
+  if (!line) return "";
+
+  const raw = line.slice(name.length + 1).trim();
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith("'") && raw.endsWith("'"))
+  ) {
+    return raw.slice(1, -1);
+  }
+
+  return raw;
 }
 
 function assert(condition, message) {

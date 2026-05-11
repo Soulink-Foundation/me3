@@ -5,6 +5,7 @@ import { api } from "../api";
 
 vi.mock("../api", () => ({
   api: {
+    get: vi.fn(),
     post: vi.fn(),
   },
 }));
@@ -24,6 +25,8 @@ describe("auth store", () => {
     setActivePinia(createPinia());
     window.localStorage.clear();
     vi.clearAllMocks();
+    vi.mocked(api.get).mockRejectedValue(new Error("No session"));
+    vi.mocked(api.post).mockResolvedValue({ ok: true });
   });
 
   describe("initialization", () => {
@@ -34,11 +37,21 @@ describe("auth store", () => {
       expect(store.initialized).toBe(false);
     });
 
-    it("hydrates session from local storage", async () => {
+    it("hydrates session from /auth/me", async () => {
       window.localStorage.setItem(
         "me3_core_owner_session",
         JSON.stringify(storedUser),
       );
+      vi.mocked(api.get).mockResolvedValue({
+        ok: true,
+        user: {
+          id: "owner",
+          email: "owner@example.com",
+          name: "ME3 Core Owner",
+          username: "owner",
+          timezone: null,
+        },
+      });
 
       const store = useAuthStore();
       await store.ensureInitialized();
@@ -46,6 +59,8 @@ describe("auth store", () => {
       expect(store.initialized).toBe(true);
       expect(store.user).toEqual(storedUser);
       expect(store.isAuthenticated).toBe(true);
+      expect(api.get).toHaveBeenCalledWith("/auth/me");
+      expect(window.localStorage.getItem("me3_core_owner_session")).toBeNull();
     });
 
     it("treats missing session as unauthenticated", async () => {
@@ -55,20 +70,28 @@ describe("auth store", () => {
       expect(store.initialized).toBe(true);
       expect(store.user).toBeNull();
       expect(store.isAuthenticated).toBe(false);
+      expect(api.get).toHaveBeenCalledWith("/auth/me");
     });
 
     it("does not rehydrate after initialization", async () => {
-      window.localStorage.setItem(
-        "me3_core_owner_session",
-        JSON.stringify(storedUser),
-      );
+      vi.mocked(api.get).mockResolvedValue({
+        ok: true,
+        user: {
+          id: "owner",
+          email: "owner@example.com",
+          name: "ME3 Core Owner",
+          username: "owner",
+          timezone: null,
+        },
+      });
 
       const store = useAuthStore();
       await store.ensureInitialized();
-      window.localStorage.clear();
+      vi.mocked(api.get).mockRejectedValue(new Error("No session"));
       await store.ensureInitialized();
 
       expect(store.user).toEqual(storedUser);
+      expect(api.get).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -100,9 +123,7 @@ describe("auth store", () => {
       });
       expect(store.isAuthenticated).toBe(true);
       expect(store.initialized).toBe(true);
-      expect(window.localStorage.getItem("me3_core_owner_session")).toContain(
-        "owner@example.com",
-      );
+      expect(window.localStorage.getItem("me3_core_owner_session")).toBeNull();
       expect(api.post).toHaveBeenCalledWith("/admin/bootstrap", {
         bootstrapCode: "local-code",
         email: "owner@example.com",
@@ -163,6 +184,7 @@ describe("auth store", () => {
 
       await store.logout();
 
+      expect(api.post).toHaveBeenCalledWith("/auth/logout");
       expect(store.user).toBeNull();
       expect(store.isAuthenticated).toBe(false);
       expect(store.initialized).toBe(true);

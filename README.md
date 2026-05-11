@@ -14,6 +14,7 @@ This repository is intentionally small at first. It is not a raw split of `me3-a
 - Vue web shell for local admin/bootstrap and setup-required states.
 - Minimal D1 schema for install metadata, owner profile, and assistant messages.
 - Example install config with no ME3 Cloud production domains, IDs, routes, or secrets.
+- Simple provider-free owner auth: bootstrap code in, httpOnly signed session cookie out.
 
 ## Boundaries
 
@@ -38,6 +39,29 @@ pnpm --filter @me3/web dev
 `pnpm setup:dev-vars` creates `apps/worker/.dev.vars` with generated local-only bootstrap values. Never commit real secrets.
 
 `pnpm verify:local-boot` is the extraction acceptance gate for the first slice. It applies the local D1 migration, starts the Worker and web shell, checks `/health`, `/api/config`, `/api/admin/bootstrap`, `/api/assistant/chat`, `/.well-known/me.json`, and verifies that the web shell responds.
+
+## Owner Auth
+
+ME3 Core uses a local-first owner bootstrap flow so an install can come up without Postmark, OAuth, hosted billing, or ME3 Cloud.
+
+Required owner auth secrets:
+
+- `ADMIN_BOOTSTRAP_CODE` unlocks first-run setup and owner profile updates.
+- `JWT_SECRET` signs the owner session cookie.
+- `TOKEN_ENCRYPTION_KEY` is reserved for encrypted owner/provider tokens.
+
+Local setup:
+
+```bash
+pnpm setup:dev-vars
+pnpm --filter @me3-core/worker db:migrate:local
+pnpm --filter @me3-core/worker dev
+pnpm --filter @me3/web dev
+```
+
+Open the web app, enter the generated `ADMIN_BOOTSTRAP_CODE`, and create the owner profile. A successful bootstrap sets an httpOnly `me3_core_session` cookie. The web app hydrates refreshes from `/api/auth/me` and logs out through `/api/auth/logout`; it does not trust localStorage for authentication.
+
+Owner-only Worker routes, including `/api/assistant/chat`, require a valid server-verified session. Public install routes such as `/health`, `/api/config`, and `/.well-known/me.json` remain unauthenticated.
 
 ## Web UI
 

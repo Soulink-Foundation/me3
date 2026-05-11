@@ -29,10 +29,6 @@ export interface BootstrapOwnerInput {
 
 const STORAGE_KEY = "me3_core_owner_session";
 
-function hasBrowserStorage() {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
-}
-
 function ownerToUser(owner: OwnerProfile): User {
   return {
     id: owner.id,
@@ -45,28 +41,8 @@ function ownerToUser(owner: OwnerProfile): User {
   };
 }
 
-function readStoredSession(): User | null {
-  if (!hasBrowserStorage()) return null;
-
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as User;
-    if (!parsed?.id || !parsed?.username) return null;
-    return parsed;
-  } catch {
-    window.localStorage.removeItem(STORAGE_KEY);
-    return null;
-  }
-}
-
-function writeStoredSession(newUser: User) {
-  if (!hasBrowserStorage()) return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(newUser));
-}
-
 function clearStoredSession() {
-  if (!hasBrowserStorage()) return;
+  if (typeof window === "undefined" || typeof window.localStorage === "undefined") return;
   window.localStorage.removeItem(STORAGE_KEY);
 }
 
@@ -80,12 +56,20 @@ export const useAuthStore = defineStore("auth", () => {
   function setSession(newUser: User) {
     user.value = newUser;
     initialized.value = true;
-    writeStoredSession(newUser);
+    clearStoredSession();
   }
 
   async function refreshSession(): Promise<boolean> {
-    user.value = readStoredSession();
-    return Boolean(user.value);
+    try {
+      const response = await api.get<{ ok: boolean; user: OwnerProfile | null }>("/auth/me");
+      user.value = response.ok && response.user ? ownerToUser(response.user) : null;
+      return Boolean(user.value);
+    } catch {
+      user.value = null;
+      return false;
+    } finally {
+      clearStoredSession();
+    }
   }
 
   async function ensureInitialized(): Promise<void> {
@@ -127,6 +111,12 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   async function logout() {
+    try {
+      await api.post<{ ok: boolean }>("/auth/logout");
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+
     user.value = null;
     initialized.value = true;
     clearStoredSession();
