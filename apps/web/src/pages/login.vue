@@ -120,6 +120,7 @@ async function submitBootstrap() {
           autocomplete="one-time-code"
           class="input"
           aria-label="Bootstrap code"
+          placeholder="Bootstrap code"
           required
           autofocus
         />
@@ -130,6 +131,7 @@ async function submitBootstrap() {
           autocomplete="name"
           class="input"
           aria-label="Name"
+          placeholder="Name"
           required
         />
 
@@ -139,11 +141,12 @@ async function submitBootstrap() {
           autocomplete="email"
           class="input"
           aria-label="Email"
+          placeholder="Email"
           required
         />
 
-        <button type="submit" class="button" :disabled="!canSubmit" aria-label="Enter">
-          <span aria-hidden="true">{{ loading ? "..." : ">" }}</span>
+        <button type="submit" class="button" :disabled="!canSubmit">
+          {{ loading ? "Opening..." : "Open workspace" }}
         </button>
 
         <p v-if="error" class="error">{{ error }}</p>
@@ -198,7 +201,8 @@ async function submitBootstrap() {
 }
 
 .input::placeholder {
-  color: transparent;
+  color: var(--ui-text-muted, var(--color-text-muted));
+  opacity: 0.78;
 }
 
 .input:focus {
