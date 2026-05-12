@@ -11,6 +11,7 @@ export interface Env {
   ME3_ADMIN_HOST?: string;
   ME3_SITE_HOST?: string;
   ME3_SITE_USERNAME?: string;
+  ME3_SOCIAL_OAUTH_ORIGIN?: string;
 
   JWT_SECRET?: string;
   TOKEN_ENCRYPTION_KEY?: string;

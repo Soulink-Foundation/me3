@@ -70,6 +70,7 @@ export type SocialAuthorizeInput = {
 
 export type SocialAuthorizeOptions = {
   apiOrigin: string;
+  hostedOAuthOrigin?: string | null;
 };
 
 export type SocialCallbackOptions = {
@@ -77,10 +78,79 @@ export type SocialCallbackOptions = {
   webOrigin: string;
   fetch: typeof fetch;
   installKey: string;
+  hostedOAuthOrigin?: string | null;
 };
 
 export type SocialProviderSettingsUpdate = {
   providers?: unknown;
+};
+
+export type ContentPlatform = SocialPlatform;
+
+export type ContentItemStatus =
+  | "bank"
+  | "queued"
+  | "scheduled"
+  | "publishing"
+  | "posted"
+  | "failed"
+  | "archived";
+
+export type ContentMediaAsset = {
+  url: string;
+  filename?: string;
+  mimeType?: string;
+  kind?: "image" | "video";
+  path?: string;
+  assetIndex?: number;
+};
+
+export type ContentItem = {
+  id: string;
+  siteId: string;
+  siteUsername: string;
+  userId: string;
+  body: string;
+  mediaManifest: ContentMediaAsset[];
+  platforms: ContentPlatform[];
+  sourceType: "original" | "blog_extract" | "imported" | "reworked";
+  sourceRef: string | null;
+  status: ContentItemStatus;
+  queuePosition: number | null;
+  scheduledFor: string | null;
+  timezone: string | null;
+  createdBy: "human" | "agent_suggested";
+  approvedByHuman: boolean;
+  evergreen: boolean;
+  timesPosted: number;
+  lastPostedAt: string | null;
+  cooldownDays: number;
+  tags: string[];
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ContentStats = {
+  bankCount: number;
+  queuedCount: number;
+  postedCount: number;
+  nextScheduledAt: string | null;
+};
+
+export type CreateContentItemInput = {
+  siteId?: unknown;
+  body?: unknown;
+  platforms?: unknown;
+  mediaManifest?: unknown;
+  timezone?: unknown;
+  notes?: unknown;
+  evergreen?: unknown;
+  tags?: unknown;
+};
+
+export type UpdateContentItemInput = Partial<CreateContentItemInput> & {
+  status?: unknown;
 };
 
 type PluginInstallationRow = {
@@ -91,6 +161,7 @@ type PluginInstallationRow = {
 type SiteRow = {
   id: string;
   user_id: string;
+  username?: string;
 };
 
 type SocialAccountRow = {
@@ -128,6 +199,38 @@ type SocialOauthStateRow = {
   return_path: string;
   code_verifier: string | null;
   expires_at: string;
+};
+
+type ContentItemRow = {
+  id: string;
+  site_id: string;
+  site_username: string;
+  user_id: string;
+  body: string;
+  media_manifest_json: string;
+  platforms_json: string;
+  source_type: ContentItem["sourceType"];
+  source_ref: string | null;
+  status: ContentItemStatus;
+  queue_position: number | null;
+  scheduled_for: string | null;
+  timezone: string | null;
+  created_by: ContentItem["createdBy"];
+  approved_by_human: number;
+  evergreen: number;
+  times_posted: number;
+  last_posted_at: string | null;
+  cooldown_days: number;
+  tags_json: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ContentQueueRow = {
+  id: string;
+  status: ContentItemStatus;
+  queue_position: number | null;
 };
 
 type D1StatementLike = {
@@ -324,6 +427,27 @@ export async function startSocialOAuth(
     .first<SiteRow>();
   if (!site) throw new SocialPublishingInputError("Site not found", 404);
 
+  if (options.hostedOAuthOrigin) {
+    const id = randomToken("socst");
+    const state = randomToken(`soc_${platform}`);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const returnPath = sanitizeReturnPath(input.returnPath);
+
+    await env.DB.prepare(
+      `INSERT INTO social_oauth_states (
+         id, state, user_id, site_id, platform, return_path, code_verifier, expires_at, created_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'))`,
+    )
+      .bind(id, state, ownerId, siteId, platform, returnPath, expiresAt)
+      .run();
+
+    return {
+      platform,
+      url: buildHostedAuthorizeUrl(platform, state, options),
+    };
+  }
+
   const setting = await getProviderSettingRow(env, ownerId, platform);
   if (!setting?.enabled || !setting.client_id || !setting.encrypted_client_secret) {
     throw new SocialPublishingInputError(`${platformLabel(platform)} integration is not configured`, 424);
@@ -350,17 +474,30 @@ export async function startSocialOAuth(
   };
 }
 
+function buildHostedAuthorizeUrl(
+  platform: SocialPlatform,
+  state: string,
+  options: SocialAuthorizeOptions,
+): string {
+  const origin = options.hostedOAuthOrigin?.replace(/\/$/, "");
+  if (!origin) throw new SocialPublishingInputError("Hosted social OAuth is not configured", 424);
+  const url = new URL(`/api/social/${platform}/authorize`, origin);
+  url.searchParams.set("state", state);
+  url.searchParams.set("core_callback", `${options.apiOrigin.replace(/\/$/, "")}/api/social/${platform}/callback`);
+  return url.toString();
+}
+
 export async function completeSocialOAuth(
   env: SocialPublishingEnv,
   platformInput: unknown,
-  query: { code?: string | null; state?: string | null; error?: string | null },
+  query: { code?: string | null; state?: string | null; error?: string | null; handoff?: string | null },
   options: SocialCallbackOptions,
 ): Promise<string> {
   const gate = await getSocialPublishingRuntimeStatus(env);
   const platform = normalizePlatform(platformInput);
   const frontend = options.webOrigin;
   if (query.error) return buildFrontendRedirect(frontend, "/social", { social_error: query.error });
-  if (!platform || !query.code || !query.state) {
+  if (!platform || !query.state) {
     return buildFrontendRedirect(frontend, "/social", { social_error: "missing_params" });
   }
   if (!gate.ready) {
@@ -377,6 +514,14 @@ export async function completeSocialOAuth(
 
   if (!stateRow || new Date(stateRow.expires_at) < new Date()) {
     return buildFrontendRedirect(frontend, "/social", { social_error: "state_expired" });
+  }
+
+  if (query.handoff) {
+    return completeHostedSocialOAuth(env, stateRow, query.handoff, options);
+  }
+
+  if (!query.code) {
+    return buildFrontendRedirect(frontend, "/social", { social_error: "missing_params" });
   }
 
   const setting = await getProviderSettingRow(env, stateRow.user_id, platform);
@@ -432,6 +577,407 @@ export async function completeSocialOAuth(
     .run();
 
   return buildFrontendRedirect(frontend, stateRow.return_path, { social_connected: platform });
+}
+
+async function completeHostedSocialOAuth(
+  env: SocialPublishingEnv,
+  stateRow: SocialOauthStateRow,
+  handoff: string,
+  options: SocialCallbackOptions,
+): Promise<string> {
+  const origin = options.hostedOAuthOrigin?.replace(/\/$/, "");
+  if (!origin) {
+    return buildFrontendRedirect(options.webOrigin, stateRow.return_path, { social_error: "config" });
+  }
+
+  const response = await options.fetch(`${origin}/api/social/oauth/redeem`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      handoff,
+      state: stateRow.state,
+      platform: stateRow.platform,
+    }),
+  });
+  const payload = await readJsonResponse<{
+    account?: {
+      id?: string;
+      handle?: string | null;
+      displayName?: string | null;
+    };
+    token?: {
+      accessToken?: string;
+      refreshToken?: string | null;
+      expiresAt?: string | null;
+      scopes?: string[];
+    };
+  }>(response);
+
+  if (!payload.account?.id || !payload.token?.accessToken) {
+    throw new SocialPublishingInputError("Hosted social handoff was invalid", 502);
+  }
+
+  const now = new Date().toISOString();
+  await env.DB.prepare("DELETE FROM social_oauth_states WHERE id = ?")
+    .bind(stateRow.id)
+    .run();
+
+  await env.DB.prepare(
+    `INSERT INTO social_accounts (
+       id, user_id, site_id, platform, platform_account_id, platform_handle, display_name,
+       access_token_ciphertext, refresh_token_ciphertext, token_expires_at, scopes_json,
+       status, metadata_json, last_verified_at, created_at, updated_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+     ON CONFLICT(site_id, platform, platform_account_id) DO UPDATE SET
+       platform_handle = excluded.platform_handle,
+       display_name = excluded.display_name,
+       access_token_ciphertext = excluded.access_token_ciphertext,
+       refresh_token_ciphertext = excluded.refresh_token_ciphertext,
+       token_expires_at = excluded.token_expires_at,
+       scopes_json = excluded.scopes_json,
+       status = 'active',
+       metadata_json = excluded.metadata_json,
+       last_verified_at = excluded.last_verified_at,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(
+      randomToken("socacct"),
+      stateRow.user_id,
+      stateRow.site_id,
+      stateRow.platform,
+      payload.account.id,
+      payload.account.handle || null,
+      payload.account.displayName || null,
+      await encryptSecret(payload.token.accessToken, options.installKey),
+      payload.token.refreshToken ? await encryptSecret(payload.token.refreshToken, options.installKey) : null,
+      payload.token.expiresAt || null,
+      JSON.stringify(Array.isArray(payload.token.scopes) ? payload.token.scopes : []),
+      JSON.stringify({ provider: stateRow.platform, credentialSource: "hosted_oauth" }),
+      now,
+      now,
+      now,
+    )
+    .run();
+
+  return buildFrontendRedirect(options.webOrigin, stateRow.return_path, { social_connected: stateRow.platform });
+}
+
+export async function listContentItems(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  siteIdInput: unknown,
+  statusInput?: unknown,
+): Promise<ContentItem[]> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const siteId = normalizeId(siteIdInput);
+  if (!siteId) throw new SocialPublishingInputError("siteId is required");
+  const site = await getOwnedSite(env, ownerId, siteId);
+  if (!site) return [];
+
+  const status = normalizeContentStatus(statusInput);
+  const rows = await env.DB.prepare(
+    `SELECT c.*, s.username AS site_username
+     FROM content_bank_items c
+     JOIN sites s ON s.id = c.site_id
+     WHERE c.user_id = ?
+       AND c.site_id = ?
+       AND (? IS NULL OR c.status = ?)
+     ORDER BY
+       CASE
+         WHEN c.status IN ('queued', 'scheduled') THEN 0
+         WHEN c.status = 'publishing' THEN 1
+         WHEN c.status = 'posted' THEN 3
+         ELSE 2
+       END ASC,
+       CASE
+         WHEN c.status IN ('queued', 'scheduled') THEN COALESCE(c.queue_position, 2147483647)
+         ELSE NULL
+       END ASC,
+       CASE
+         WHEN c.status = 'posted' THEN COALESCE(c.last_posted_at, c.updated_at)
+         ELSE c.updated_at
+       END DESC`,
+  )
+    .bind(ownerId, site.id, status ?? null, status ?? null)
+    .all<ContentItemRow>();
+
+  return (rows.results || []).map(serializeContentItem);
+}
+
+export async function getContentStats(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  siteIdInput: unknown,
+): Promise<ContentStats | null> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const siteId = normalizeId(siteIdInput);
+  if (!siteId) throw new SocialPublishingInputError("siteId is required");
+  const site = await getOwnedSite(env, ownerId, siteId);
+  if (!site) return null;
+
+  const row = await env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'bank' THEN 1 ELSE 0 END) AS bank_count,
+       SUM(CASE WHEN status IN ('queued', 'scheduled') THEN 1 ELSE 0 END) AS queued_count,
+       SUM(CASE WHEN status = 'posted' THEN 1 ELSE 0 END) AS posted_count,
+       MIN(CASE WHEN status = 'scheduled' THEN scheduled_for ELSE NULL END) AS next_scheduled_at
+     FROM content_bank_items
+     WHERE user_id = ? AND site_id = ?`,
+  )
+    .bind(ownerId, site.id)
+    .first<{
+      bank_count: number | null;
+      queued_count: number | null;
+      posted_count: number | null;
+      next_scheduled_at: string | null;
+    }>();
+
+  return {
+    bankCount: row?.bank_count || 0,
+    queuedCount: row?.queued_count || 0,
+    postedCount: row?.posted_count || 0,
+    nextScheduledAt: row?.next_scheduled_at || null,
+  };
+}
+
+export async function createContentItem(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  input: CreateContentItemInput,
+): Promise<ContentItem> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const siteId = normalizeId(input.siteId);
+  if (!siteId) throw new SocialPublishingInputError("siteId is required");
+  const site = await getOwnedSite(env, ownerId, siteId);
+  if (!site) throw new SocialPublishingInputError("Site not found", 404);
+
+  const body = normalizeBody(input.body);
+  if (!body) throw new SocialPublishingInputError("Content body is required");
+  const platforms = normalizeContentPlatforms(input.platforms);
+  if (platforms.length === 0) {
+    throw new SocialPublishingInputError("Choose at least one platform");
+  }
+
+  const id = randomToken("content");
+  await env.DB.prepare(
+    `INSERT INTO content_bank_items (
+       id, site_id, user_id, body, media_manifest_json, platforms_json,
+       source_type, source_ref, timezone, notes, evergreen, tags_json,
+       approved_by_human, created_by, created_at, updated_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?, 'original', NULL, ?, ?, ?, ?, 1, 'human', datetime('now'), datetime('now'))`,
+  )
+    .bind(
+      id,
+      site.id,
+      ownerId,
+      body,
+      JSON.stringify(normalizeMediaManifest(input.mediaManifest)),
+      JSON.stringify(platforms),
+      typeof input.timezone === "string" ? input.timezone.trim() || null : null,
+      typeof input.notes === "string" ? input.notes.trim() || null : null,
+      input.evergreen === true ? 1 : 0,
+      JSON.stringify(normalizeTags(input.tags)),
+    )
+    .run();
+
+  const created = await getOwnedContentItem(env, ownerId, id);
+  if (!created) throw new SocialPublishingInputError("Could not create content item", 500);
+  return serializeContentItem(created);
+}
+
+export async function updateContentItem(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  idInput: unknown,
+  input: UpdateContentItemInput,
+): Promise<ContentItem | null> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const id = normalizeId(idInput);
+  if (!id) throw new SocialPublishingInputError("Content item id is required");
+  const existing = await getOwnedContentItem(env, ownerId, id);
+  if (!existing) return null;
+
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (input.body !== undefined) {
+    const body = normalizeBody(input.body);
+    if (!body) throw new SocialPublishingInputError("Content body is required");
+    updates.push("body = ?");
+    values.push(body);
+  }
+  if (input.platforms !== undefined) {
+    const platforms = normalizeContentPlatforms(input.platforms);
+    if (platforms.length === 0) {
+      throw new SocialPublishingInputError("Choose at least one platform");
+    }
+    updates.push("platforms_json = ?");
+    values.push(JSON.stringify(platforms));
+  }
+  if (input.mediaManifest !== undefined) {
+    updates.push("media_manifest_json = ?");
+    values.push(JSON.stringify(normalizeMediaManifest(input.mediaManifest)));
+  }
+  if (input.status !== undefined) {
+    const status = normalizeContentStatus(input.status);
+    if (!status) throw new SocialPublishingInputError("Unsupported content status");
+    updates.push("status = ?");
+    values.push(status);
+  }
+  if (input.timezone !== undefined) {
+    updates.push("timezone = ?");
+    values.push(typeof input.timezone === "string" ? input.timezone.trim() || null : null);
+  }
+  if (input.notes !== undefined) {
+    updates.push("notes = ?");
+    values.push(typeof input.notes === "string" ? input.notes.trim() || null : null);
+  }
+  if (input.evergreen !== undefined) {
+    updates.push("evergreen = ?");
+    values.push(input.evergreen === true ? 1 : 0);
+  }
+  if (input.tags !== undefined) {
+    updates.push("tags_json = ?");
+    values.push(JSON.stringify(normalizeTags(input.tags)));
+  }
+
+  if (updates.length === 0) return serializeContentItem(existing);
+
+  await env.DB.prepare(
+    `UPDATE content_bank_items
+     SET ${updates.join(", ")}, approved_by_human = 1, updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`,
+  )
+    .bind(...values, id, ownerId)
+    .run();
+
+  const updated = await getOwnedContentItem(env, ownerId, id);
+  return updated ? serializeContentItem(updated) : null;
+}
+
+export async function deleteContentItem(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  idInput: unknown,
+): Promise<boolean> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const id = normalizeId(idInput);
+  if (!id) throw new SocialPublishingInputError("Content item id is required");
+  const existing = await getOwnedContentItem(env, ownerId, id);
+  if (!existing) return false;
+
+  await env.DB.prepare("DELETE FROM content_bank_items WHERE id = ? AND user_id = ?")
+    .bind(id, ownerId)
+    .run();
+
+  if (existing.status === "queued" || existing.status === "scheduled") {
+    await resequenceContentQueue(env, ownerId, existing.site_id);
+  }
+  return true;
+}
+
+export async function appendContentItemMedia(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  idInput: unknown,
+  asset: ContentMediaAsset,
+): Promise<ContentItem | null> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const id = normalizeId(idInput);
+  if (!id) throw new SocialPublishingInputError("Content item id is required");
+  const existing = await getOwnedContentItem(env, ownerId, id);
+  if (!existing) return null;
+
+  const nextManifest = [
+    ...normalizeMediaManifest(parseJsonArray(existing.media_manifest_json)),
+    asset,
+  ];
+
+  await env.DB.prepare(
+    `UPDATE content_bank_items
+     SET media_manifest_json = ?, approved_by_human = 1, updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`,
+  )
+    .bind(JSON.stringify(nextManifest), id, ownerId)
+    .run();
+
+  const updated = await getOwnedContentItem(env, ownerId, id);
+  return updated ? serializeContentItem(updated) : null;
+}
+
+export async function queueContentItem(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  idInput: unknown,
+): Promise<ContentItem | null> {
+  return setContentQueueState(env, ownerId, idInput, "queued");
+}
+
+export async function unqueueContentItem(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  idInput: unknown,
+): Promise<ContentItem | null> {
+  return setContentQueueState(env, ownerId, idInput, "bank");
+}
+
+export async function markContentItemPublishing(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  idInput: unknown,
+): Promise<ContentItem | null> {
+  const item = await setContentQueueState(env, ownerId, idInput, "publishing");
+  return item;
+}
+
+export async function reorderContentQueue(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  siteIdInput: unknown,
+  itemIdsInput: unknown,
+): Promise<ContentItem[]> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const siteId = normalizeId(siteIdInput);
+  if (!siteId) throw new SocialPublishingInputError("siteId is required");
+  const site = await getOwnedSite(env, ownerId, siteId);
+  if (!site) throw new SocialPublishingInputError("Site not found", 404);
+  const itemIds = Array.isArray(itemIdsInput)
+    ? Array.from(
+        new Set(
+          itemIdsInput
+            .map(normalizeId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      )
+    : [];
+  if (itemIds.length === 0) throw new SocialPublishingInputError("Queue order is required");
+
+  const rows = await listQueueRows(env, ownerId, site.id);
+  const currentIds = rows.map((row) => row.id);
+  if (
+    itemIds.length !== currentIds.length ||
+    itemIds.some((id) => !currentIds.includes(id))
+  ) {
+    throw new SocialPublishingInputError("Queue order does not match current queue");
+  }
+
+  await resequenceContentQueue(env, ownerId, site.id, itemIds);
+  return listContentItems(env, ownerId, site.id, null);
 }
 
 function createGate(
@@ -682,6 +1228,218 @@ function normalizeToken(
     expiresAt: body.expires_in ? new Date(Date.now() + body.expires_in * 1000).toISOString() : null,
     scopes,
   };
+}
+
+async function getOwnedSite(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  siteId: string,
+): Promise<Required<Pick<SiteRow, "id" | "user_id" | "username">> | null> {
+  return env.DB.prepare("SELECT id, user_id, username FROM sites WHERE id = ? AND user_id = ?")
+    .bind(siteId, ownerId)
+    .first<Required<Pick<SiteRow, "id" | "user_id" | "username">>>();
+}
+
+async function getOwnedContentItem(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  id: string,
+): Promise<ContentItemRow | null> {
+  return env.DB.prepare(
+    `SELECT c.*, s.username AS site_username
+     FROM content_bank_items c
+     JOIN sites s ON s.id = c.site_id
+     WHERE c.id = ? AND c.user_id = ?`,
+  )
+    .bind(id, ownerId)
+    .first<ContentItemRow>();
+}
+
+async function listQueueRows(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  siteId: string,
+): Promise<ContentQueueRow[]> {
+  const rows = await env.DB.prepare(
+    `SELECT id, status, queue_position
+     FROM content_bank_items
+     WHERE user_id = ?
+       AND site_id = ?
+       AND status IN ('queued', 'scheduled')
+     ORDER BY COALESCE(queue_position, 2147483647), updated_at DESC`,
+  )
+    .bind(ownerId, siteId)
+    .all<ContentQueueRow>();
+  return rows.results || [];
+}
+
+async function resequenceContentQueue(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  siteId: string,
+  orderedIds?: string[],
+): Promise<void> {
+  const rows = await listQueueRows(env, ownerId, siteId);
+  const ids = orderedIds && orderedIds.length > 0 ? orderedIds : rows.map((row) => row.id);
+  for (const [index, id] of ids.entries()) {
+    await env.DB.prepare(
+      `UPDATE content_bank_items
+       SET queue_position = ?, updated_at = datetime('now')
+       WHERE id = ? AND user_id = ? AND site_id = ?`,
+    )
+      .bind(index + 1, id, ownerId, siteId)
+      .run();
+  }
+}
+
+async function setContentQueueState(
+  env: SocialPublishingEnv,
+  ownerId: string,
+  idInput: unknown,
+  status: "bank" | "queued" | "publishing",
+): Promise<ContentItem | null> {
+  const gate = await getSocialPublishingRuntimeStatus(env);
+  if (!gate.ready) throw new SocialPublishingGateError(gate);
+
+  const id = normalizeId(idInput);
+  if (!id) throw new SocialPublishingInputError("Content item id is required");
+  const existing = await getOwnedContentItem(env, ownerId, id);
+  if (!existing) return null;
+  if (existing.status === "publishing") {
+    throw new SocialPublishingInputError("This item is already publishing");
+  }
+
+  let queuePosition: number | null = null;
+  if (status === "queued") {
+    const alreadyQueued = existing.status === "queued" || existing.status === "scheduled";
+    const rows = await listQueueRows(env, ownerId, existing.site_id);
+    queuePosition = alreadyQueued
+      ? existing.queue_position || rows.length || 1
+      : rows.length + 1;
+  }
+
+  await env.DB.prepare(
+    `UPDATE content_bank_items
+     SET status = ?,
+         queue_position = ?,
+         scheduled_for = NULL,
+         approved_by_human = 1,
+         updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`,
+  )
+    .bind(status, queuePosition, id, ownerId)
+    .run();
+
+  if (
+    existing.status === "queued" ||
+    existing.status === "scheduled" ||
+    status === "queued"
+  ) {
+    await resequenceContentQueue(env, ownerId, existing.site_id);
+  }
+
+  const updated = await getOwnedContentItem(env, ownerId, id);
+  return updated ? serializeContentItem(updated) : null;
+}
+
+function serializeContentItem(row: ContentItemRow): ContentItem {
+  return {
+    id: row.id,
+    siteId: row.site_id,
+    siteUsername: row.site_username,
+    userId: row.user_id,
+    body: row.body,
+    mediaManifest: normalizeMediaManifest(parseJsonArray(row.media_manifest_json)),
+    platforms: normalizeContentPlatforms(parseJsonArray(row.platforms_json)),
+    sourceType: row.source_type,
+    sourceRef: row.source_ref,
+    status: row.status,
+    queuePosition: row.queue_position,
+    scheduledFor: row.scheduled_for,
+    timezone: row.timezone,
+    createdBy: row.created_by,
+    approvedByHuman: row.approved_by_human === 1,
+    evergreen: row.evergreen === 1,
+    timesPosted: row.times_posted,
+    lastPostedAt: row.last_posted_at,
+    cooldownDays: row.cooldown_days,
+    tags: normalizeTags(parseJsonArray(row.tags_json)),
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeContentStatus(value: unknown): ContentItemStatus | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return [
+    "bank",
+    "queued",
+    "scheduled",
+    "publishing",
+    "posted",
+    "failed",
+    "archived",
+  ].includes(normalized)
+    ? (normalized as ContentItemStatus)
+    : null;
+}
+
+function normalizeContentPlatforms(value: unknown): ContentPlatform[] {
+  if (!Array.isArray(value)) return [];
+  const platforms = value
+    .map(normalizePlatform)
+    .filter((platform): platform is ContentPlatform => Boolean(platform));
+  return Array.from(new Set(platforms));
+}
+
+function normalizeBody(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeMediaManifest(value: unknown): ContentMediaAsset[] {
+  if (!Array.isArray(value)) return [];
+  const assets: ContentMediaAsset[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const url = typeof item.url === "string" ? item.url.trim() : "";
+    if (!url) continue;
+    assets.push({
+      url,
+      filename: typeof item.filename === "string" ? item.filename.trim() || undefined : undefined,
+      mimeType: typeof item.mimeType === "string" ? item.mimeType.trim() || undefined : undefined,
+      kind: item.kind === "image" || item.kind === "video" ? item.kind : undefined,
+      path: typeof item.path === "string" ? item.path.trim() || undefined : undefined,
+      assetIndex:
+        typeof item.assetIndex === "number" && Number.isFinite(item.assetIndex)
+          ? Math.round(item.assetIndex)
+          : undefined,
+    });
+  }
+  return assets;
+}
+
+function normalizeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function parseJsonArray(value: string | null | undefined): unknown[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function gateErrorMessage(gate: SocialPublishingGate): string {

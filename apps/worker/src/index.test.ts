@@ -83,6 +83,31 @@ type StoredSocialOauthState = {
   expires_at: string;
   created_at: string;
 };
+type StoredContentItem = {
+  id: string;
+  site_id: string;
+  site_username: string;
+  user_id: string;
+  body: string;
+  media_manifest_json: string;
+  platforms_json: string;
+  source_type: "original" | "blog_extract" | "imported" | "reworked";
+  source_ref: string | null;
+  status: "bank" | "queued" | "scheduled" | "publishing" | "posted" | "failed" | "archived";
+  queue_position: number | null;
+  scheduled_for: string | null;
+  timezone: string | null;
+  created_by: "human" | "agent_suggested";
+  approved_by_human: number;
+  evergreen: number;
+  times_posted: number;
+  last_posted_at: string | null;
+  cooldown_days: number;
+  tags_json: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 function createEnv(): Env & {
   owner: StoredOwner | null;
@@ -100,6 +125,7 @@ function createEnv(): Env & {
   socialAccounts: StoredSocialAccount[];
   socialProviderSettings: StoredSocialProviderSetting[];
   socialOauthStates: StoredSocialOauthState[];
+  contentItems: StoredContentItem[];
 } {
   const state = {
     owner: null as StoredOwner | null,
@@ -117,6 +143,7 @@ function createEnv(): Env & {
     socialAccounts: [] as StoredSocialAccount[],
     socialProviderSettings: [] as StoredSocialProviderSetting[],
     socialOauthStates: [] as StoredSocialOauthState[],
+    contentItems: [] as StoredContentItem[],
   };
 
   const db = {
@@ -283,6 +310,64 @@ function createEnv(): Env & {
                 } else {
                   state.socialAccounts.push(account);
                 }
+              }
+
+              if (sql.includes("INSERT INTO content_bank_items")) {
+                state.contentItems.push({
+                  id: values[0] as string,
+                  site_id: values[1] as string,
+                  site_username: "owner",
+                  user_id: values[2] as string,
+                  body: values[3] as string,
+                  media_manifest_json: values[4] as string,
+                  platforms_json: values[5] as string,
+                  source_type: "original",
+                  source_ref: null,
+                  status: "bank",
+                  queue_position: null,
+                  scheduled_for: null,
+                  timezone: values[6] as string | null,
+                  notes: values[7] as string | null,
+                  evergreen: values[8] as number,
+                  tags_json: values[9] as string,
+                  approved_by_human: 1,
+                  created_by: "human",
+                  times_posted: 0,
+                  last_posted_at: null,
+                  cooldown_days: 30,
+                  created_at: "2026-05-12T09:00:00Z",
+                  updated_at: "2026-05-12T09:00:00Z",
+                });
+              }
+
+              if (sql.includes("UPDATE content_bank_items")) {
+                const resequence = sql.includes("WHERE id = ? AND user_id = ? AND site_id = ?");
+                const id = (resequence ? values[1] : values[values.length - 2]) as string;
+                const userId = (resequence ? values[2] : values[values.length - 1]) as string;
+                const item = state.contentItems.find(
+                  (entry) => entry.id === id && entry.user_id === userId,
+                );
+                if (item) {
+                  if (resequence) {
+                    item.queue_position = values[0] as number;
+                    item.updated_at = "2026-05-12T09:05:00Z";
+                    return { success: true };
+                  }
+                  if (sql.includes("status = ?")) {
+                    item.status = values[0] as StoredContentItem["status"];
+                    item.queue_position = values[1] as number | null;
+                    item.scheduled_for = null;
+                  }
+                  if (sql.includes("body = ?")) item.body = values[0] as string;
+                  item.approved_by_human = 1;
+                  item.updated_at = "2026-05-12T09:05:00Z";
+                }
+              }
+
+              if (sql.includes("DELETE FROM content_bank_items")) {
+                state.contentItems = state.contentItems.filter(
+                  (entry) => !(entry.id === values[0] && entry.user_id === values[1]),
+                );
               }
 
               if (sql.includes("INSERT INTO install_secrets")) {
@@ -708,9 +793,31 @@ function createEnv(): Env & {
                   ) || null
                 ) as T | null;
               }
+              if (sql.includes("FROM content_bank_items")) {
+                if (sql.includes("SUM(CASE")) {
+                  const userId = values[0] as string;
+                  const siteId = values[1] as string;
+                  const rows = state.contentItems.filter(
+                    (item) => item.user_id === userId && item.site_id === siteId,
+                  );
+                  return {
+                    bank_count: rows.filter((item) => item.status === "bank").length,
+                    queued_count: rows.filter(
+                      (item) => item.status === "queued" || item.status === "scheduled",
+                    ).length,
+                    posted_count: rows.filter((item) => item.status === "posted").length,
+                    next_scheduled_at: null,
+                  } as T;
+                }
+                return (
+                  state.contentItems.find(
+                    (item) => item.id === values[0] && item.user_id === values[1],
+                  ) || null
+                ) as T | null;
+              }
               if (sql.includes("FROM sites")) {
                 return values[0] === "site-1" && values[1] === "owner"
-                  ? ({ id: "site-1", user_id: "owner" } as T)
+                  ? ({ id: "site-1", user_id: "owner", username: "owner" } as T)
                   : null;
               }
               if (sql.includes("FROM social_provider_settings")) {
@@ -782,6 +889,34 @@ function createEnv(): Env & {
                   ) as T[],
                 };
               }
+              if (sql.includes("FROM content_bank_items")) {
+                if (sql.includes("status IN ('queued', 'scheduled')")) {
+                  return {
+                    results: state.contentItems
+                      .filter(
+                        (item) =>
+                          item.user_id === values[0] &&
+                          item.site_id === values[1] &&
+                          (item.status === "queued" || item.status === "scheduled"),
+                      )
+                      .sort(
+                        (a, b) =>
+                          (a.queue_position || Number.MAX_SAFE_INTEGER) -
+                          (b.queue_position || Number.MAX_SAFE_INTEGER),
+                      ) as T[],
+                  };
+                }
+                return {
+                  results: state.contentItems.filter((item) => {
+                    const status = values[2] as string | null;
+                    return (
+                      item.user_id === values[0] &&
+                      item.site_id === values[1] &&
+                      (!status || item.status === status)
+                    );
+                  }) as T[],
+                };
+              }
               return { results: [] as T[] };
             },
           };
@@ -844,6 +979,9 @@ function createEnv(): Env & {
     },
     get socialOauthStates() {
       return state.socialOauthStates;
+    },
+    get contentItems() {
+      return state.contentItems;
     },
     DB: db as unknown as D1Database,
     ENVIRONMENT: "local",
@@ -1465,6 +1603,107 @@ describe("ME3 Core Worker auth", () => {
     });
   });
 
+  it("creates and queues Social Publishing content items when installed", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+    await app.fetch(
+      new Request("http://localhost/api/plugins/me3.social-publishing/activate", {
+        method: "POST",
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+
+    const createResponse = await app.fetch(
+      new Request("http://localhost/api/content/items", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: session,
+        },
+        body: JSON.stringify({
+          siteId: "site-1",
+          body: "A useful small post for the content bank.",
+          platforms: ["linkedin"],
+        }),
+      }),
+      env,
+    );
+    const createBody = (await createResponse.json()) as {
+      item: { id: string; body: string; status: string; platforms: string[] };
+    };
+
+    expect(createResponse.status).toBe(201);
+    expect(createBody.item).toMatchObject({
+      body: "A useful small post for the content bank.",
+      status: "bank",
+      platforms: ["linkedin"],
+    });
+
+    const queueResponse = await app.fetch(
+      new Request(`http://localhost/api/content/items/${createBody.item.id}/queue`, {
+        method: "POST",
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const queueBody = (await queueResponse.json()) as {
+      item: { status: string; queuePosition: number };
+    };
+
+    expect(queueResponse.status).toBe(200);
+    expect(queueBody.item).toMatchObject({ status: "queued", queuePosition: 1 });
+
+    const listResponse = await app.fetch(
+      new Request("http://localhost/api/content/items?siteId=site-1", {
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const listBody = (await listResponse.json()) as {
+      items: Array<{ id: string; status: string }>;
+    };
+
+    expect(listResponse.status).toBe(200);
+    expect(listBody.items).toEqual([
+      expect.objectContaining({ id: createBody.item.id, status: "queued" }),
+    ]);
+  });
+
+  it("gates Social Publishing content items when disabled", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+    await app.fetch(
+      new Request("http://localhost/api/plugins/me3.social-publishing/activate", {
+        method: "POST",
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    await app.fetch(
+      new Request("http://localhost/api/plugins/me3.social-publishing/deactivate", {
+        method: "POST",
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/content/items?siteId=site-1", {
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const body = (await response.json()) as {
+      error: string;
+      plugin: { status: string; ready: boolean };
+    };
+
+    expect(response.status).toBe(403);
+    expect(body.error).toBe("Social Publishing is disabled");
+    expect(body.plugin).toMatchObject({ status: "disabled", ready: false });
+  });
+
   it("stores Social Publishing provider settings without returning secrets", async () => {
     const env = createEnv();
     const session = cookieHeader(await bootstrap(env));
@@ -1543,6 +1782,41 @@ describe("ME3 Core Worker auth", () => {
 
     expect(response.status).toBe(424);
     expect(body.error).toBe("LinkedIn integration is not configured");
+  });
+
+  it("starts hosted Social Publishing OAuth without provider secrets", async () => {
+    const env = createEnv();
+    env.ME3_SOCIAL_OAUTH_ORIGIN = "https://social-oauth.example";
+    const session = cookieHeader(await bootstrap(env));
+    await app.fetch(
+      new Request("http://localhost/api/plugins/me3.social-publishing/activate", {
+        method: "POST",
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/social/linkedin/authorize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: session,
+        },
+        body: JSON.stringify({ siteId: "site-1", returnPath: "/social" }),
+      }),
+      env,
+    );
+    const body = (await response.json()) as { url: string };
+    const url = new URL(body.url);
+
+    expect(response.status).toBe(200);
+    expect(url.origin).toBe("https://social-oauth.example");
+    expect(url.pathname).toBe("/api/social/linkedin/authorize");
+    expect(url.searchParams.get("core_callback")).toBe(
+      "http://localhost:8787/api/social/linkedin/callback",
+    );
+    expect(env.socialOauthStates).toHaveLength(1);
   });
 
   it("gates Social Publishing OAuth start when disabled", async () => {

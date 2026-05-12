@@ -106,9 +106,27 @@ const SOCIAL_PUBLISHING_PLUGIN: CorePluginManifestSummary = {
       auth: "owner",
     },
     {
-      id: "social.provider-settings.api",
-      path: "/api/social/provider-settings",
-      methods: ["GET", "PUT"],
+      id: "content.items.api",
+      path: "/api/content/items",
+      methods: ["GET", "POST"],
+      auth: "owner",
+    },
+    {
+      id: "content.item.api",
+      path: "/api/content/items/:id",
+      methods: ["PUT", "DELETE"],
+      auth: "owner",
+    },
+    {
+      id: "content.queue.api",
+      path: "/api/content/items/:id/queue",
+      methods: ["POST"],
+      auth: "owner",
+    },
+    {
+      id: "content.publish.api",
+      path: "/api/content/items/:id/publish",
+      methods: ["POST"],
       auth: "owner",
     },
     {
@@ -155,23 +173,7 @@ const SOCIAL_PUBLISHING_PLUGIN: CorePluginManifestSummary = {
       approvalMode: "approval_required",
     },
   ],
-  secrets: [
-    {
-      name: "X_CLIENT_SECRET",
-      label: "X OAuth client secret",
-      required: false,
-    },
-    {
-      name: "LINKEDIN_SOCIAL_CLIENT_SECRET",
-      label: "LinkedIn social OAuth client secret",
-      required: false,
-    },
-    {
-      name: "INSTAGRAM_APP_SECRET",
-      label: "Instagram app secret",
-      required: false,
-    },
-  ],
+  secrets: [],
   migrations: [
     {
       id: "social.0011",
@@ -198,8 +200,9 @@ const SOCIAL_PUBLISHING_PLUGIN: CorePluginManifestSummary = {
   ],
   notes: [
     "Bundled through @me3-core/plugin-social-publishing as a first-party Core package.",
-    "Current runtime exposes owner-only status, provider setup, OAuth account connection, and account inventory reads when installed.",
-    "External publishing, queue consumers, and cron dispatch remain approval-first follow-up work.",
+    "Current runtime exposes owner-only content bank, OAuth account connection, account inventory reads, and approval-first queue state when installed.",
+    "ME3-hosted provider OAuth should supply social app credentials; Core installs should only connect their own social accounts.",
+    "External publishing workers and cron dispatch remain approval-first follow-up work.",
   ],
 };
 
