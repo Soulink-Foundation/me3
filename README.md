@@ -146,6 +146,13 @@ Optional install secrets:
 
 After the first deploy, open the admin URL, enter `ADMIN_BOOTSTRAP_CODE`, and create the owner account.
 
+If the setup screen asks for a bootstrap code and you do not have one yet, create it as a Worker secret:
+
+1. Open Cloudflare Dashboard -> Workers & Pages -> `me3` -> Settings -> Variables and Secrets.
+2. Add a secret named `ADMIN_BOOTSTRAP_CODE` with a private random value.
+3. Add `JWT_SECRET` too if the setup screen says it is missing.
+4. Save, redeploy the Worker, then enter `ADMIN_BOOTSTRAP_CODE` on the setup screen.
+
 ### Manual CLI Deploy
 
 Use this when testing from a local checkout with your own Cloudflare account:

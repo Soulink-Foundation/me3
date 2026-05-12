@@ -4134,6 +4134,7 @@ async function getSetupRequired(env: Env, ownerId = "owner"): Promise<string[]> 
   const missing: string[] = [];
 
   if (!env.JWT_SECRET) missing.push("JWT_SECRET");
+  if (!env.ADMIN_BOOTSTRAP_CODE) missing.push("ADMIN_BOOTSTRAP_CODE");
   if (!(await hasConfiguredAiProvider(env, ownerId))) {
     missing.push("AI_PROVIDER");
   }

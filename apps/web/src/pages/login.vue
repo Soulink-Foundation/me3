@@ -33,6 +33,7 @@ const showPassword = ref(false);
 const loading = ref(false);
 const configLoading = ref(true);
 const ownerAuthConfigured = ref(false);
+const setupRequired = ref<string[]>([]);
 const resetMode = ref(false);
 const error = ref("");
 const notice = ref("");
@@ -44,9 +45,19 @@ const isResetMode = computed(
 const useBootstrapCodeInput = computed(
   () => isSetupMode.value || isResetMode.value,
 );
+const missingBootstrapCode = computed(
+  () => isSetupMode.value && setupRequired.value.includes("ADMIN_BOOTSTRAP_CODE"),
+);
+const missingJwtSecret = computed(
+  () => isSetupMode.value && setupRequired.value.includes("JWT_SECRET"),
+);
+const missingOwnerSecrets = computed(
+  () => missingBootstrapCode.value || missingJwtSecret.value,
+);
 
 const canSubmit = computed(() => {
   if (loading.value || configLoading.value) return false;
+  if (missingOwnerSecrets.value) return false;
   if (email.value.trim().length === 0 || password.value.length === 0)
     return false;
 
@@ -113,8 +124,14 @@ function navigateAfterLogin(target: string) {
 
 async function loadConfig() {
   try {
-    const config = await api.get<{ ownerAuthConfigured?: boolean }>("/config");
+    const config = await api.get<{
+      ownerAuthConfigured?: boolean;
+      setupRequired?: string[];
+    }>("/config");
     ownerAuthConfigured.value = Boolean(config.ownerAuthConfigured);
+    setupRequired.value = Array.isArray(config.setupRequired)
+      ? config.setupRequired
+      : [];
   } catch (configError) {
     console.error("Config load error:", configError);
     error.value = "Unable to load setup state.";
@@ -200,6 +217,22 @@ onMounted(loadConfig);
       <BrandLogo class="login__logo" alt="me3" />
 
       <form class="login-form" @submit.prevent="submitAuth">
+        <section v-if="missingOwnerSecrets" class="setup-note" aria-live="polite">
+          <h1 class="setup-note__title">Finish Cloudflare setup</h1>
+          <p v-if="missingBootstrapCode">
+            Add a Worker secret named <code>ADMIN_BOOTSTRAP_CODE</code>, then enter
+            that value here to create the owner account.
+          </p>
+          <p v-if="missingJwtSecret">
+            Add a Worker secret named <code>JWT_SECRET</code> so ME3 can sign owner
+            sessions.
+          </p>
+          <p>
+            Cloudflare Dashboard -> Workers & Pages -> me3 -> Settings ->
+            Variables and Secrets. Use a private random value, save, and redeploy.
+          </p>
+        </section>
+
         <p v-if="isResetMode" class="login-form__hint">
           Reset owner access with this install's bootstrap code.
         </p>
@@ -349,6 +382,35 @@ onMounted(loadConfig);
   font-size: 0.9rem;
   line-height: 1.45;
   text-align: center;
+}
+
+.setup-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--ui-border-strong, var(--color-border-strong));
+  border-radius: var(--ui-radius-sm, 8px);
+  background: var(--ui-surface-muted, color-mix(in srgb, var(--ui-text, #fff) 5%, transparent));
+  color: var(--ui-text, var(--color-text));
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.setup-note__title {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.2;
+}
+
+.setup-note p {
+  margin: 0;
+}
+
+.setup-note code {
+  font-size: 0.84rem;
+  color: var(--ui-text, var(--color-text));
+  overflow-wrap: anywhere;
 }
 
 .input {
