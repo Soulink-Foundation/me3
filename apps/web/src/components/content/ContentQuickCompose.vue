@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed } from "vue";
 import Button from "../Button.vue";
+import UiIcon from "../UiIcon.vue";
 import type { ContentMediaAsset } from "../../stores/content";
 import {
   socialPlatformLabel,
   type SupportedSocialPlatform,
 } from "../../utils/social-compose";
 
-const props = defineProps<{
+defineProps<{
   body: string;
   selectedPlatforms: SupportedSocialPlatform[];
   platformOptions: Array<{
@@ -50,15 +50,6 @@ function onBodyInput(event: Event) {
   const target = event.target as HTMLTextAreaElement | null;
   emit("update:body", target?.value || "");
 }
-
-const initials = computed(() => {
-  const source = props.profile.name || props.profile.handle || "me3";
-  return source
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() || "")
-    .join("");
-});
 
 function orbitBadgeClass(platform: SupportedSocialPlatform): string {
   switch (platform) {
@@ -142,13 +133,13 @@ function orbitTooltip(platform: {
             >
               <span class="social-orbit-avatar-shell">
                 <img
-                  v-if="profile.avatar"
+                  v-if="platform.connected && profile.avatar"
                   :src="profile.avatar"
                   :alt="profile.name || profile.handle"
                   class="social-orbit-avatar"
                 />
-                <span v-else class="social-orbit-avatar social-orbit-fallback">
-                  {{ initials }}
+                <span v-else class="social-orbit-avatar social-orbit-placeholder">
+                  <UiIcon name="User" :size="20" aria-hidden="true" />
                 </span>
                 <span
                   class="social-orbit-badge"
@@ -402,9 +393,8 @@ function orbitTooltip(platform: {
   background: color-mix(in oklab, var(--color-bg) 88%, black 12%);
 }
 
-.social-orbit-fallback {
-  font-size: 0.78rem;
-  font-weight: 800;
+.social-orbit-placeholder {
+  color: color-mix(in oklab, var(--color-text-muted) 76%, var(--color-bg) 24%);
 }
 
 .social-orbit-badge {
