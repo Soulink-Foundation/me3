@@ -341,17 +341,8 @@ const deleteLoading = ref(false);
 const deleteError = ref<string | null>(null);
 const supportedTimeZones = listSupportedTimeZones();
 const mailboxLoading = ref(false);
-const mailboxSaving = ref(false);
-const mailboxActivating = ref(false);
-const mailboxPausing = ref(false);
 const mailboxAvailable = ref(false);
-const mailboxCloudflareManaged = ref(false);
 const mailbox = ref<MailboxRecord | null>(null);
-const mailboxAliasInput = ref("");
-const mailboxForwardingEmail = ref("");
-const mailboxForwardingEnabled = ref(false);
-const mailboxSources = ref<MailboxSource[]>([]);
-const mailboxRecentActivity = ref<MailboxActivity[]>([]);
 const mailboxMessage = ref<string | null>(null);
 const mailboxError = ref<string | null>(null);
 const pluginsLoading = ref(false);
@@ -373,7 +364,6 @@ const emailProviderSaving = ref(false);
 const emailProviderTesting = ref(false);
 const emailProviderEncryptionConfigured = ref(false);
 const emailProviders = ref<EmailProviderRecord[]>([]);
-const futureEmailProviders = ref<FutureEmailProviderRecord[]>([]);
 const selectedEmailProviderId = ref<EmailProviderId>("cloudflare-email");
 const emailProviderInputs = ref<Record<EmailProviderId, EmailProviderInputs>>(
   createEmptyEmailProviderInputs(),
@@ -409,14 +399,6 @@ const saveDisabled = computed(
     timezoneInput.value === savedTimezoneInput.value,
 );
 
-const mailboxConfigured = computed(() => mailbox.value !== null);
-
-const mailboxAliasDomain = computed(() => {
-  const address = mailbox.value?.aliasAddress || "";
-  const atIndex = address.indexOf("@");
-  return atIndex >= 0 ? address.slice(atIndex) : "@me3.local";
-});
-
 const mailboxStatusLabel = computed(() => {
   if (!mailbox.value) return "Not configured";
 
@@ -432,28 +414,19 @@ const mailboxStatusLabel = computed(() => {
 
 const mailboxStatusHint = computed(() => {
   if (!mailbox.value) {
-    return "Reserve a local Core alias for inbound capture and approval-first outbound drafts.";
+    return "Receiving email requires a custom domain.";
   }
 
   if (mailbox.value.status === "active") {
-    return mailbox.value.forwardingEnabled
-      ? `Mail stays in ME3 Core and forwards a copy to ${mailbox.value.forwardingEmail}.`
-      : "Mail is kept in ME3 Core without forwarding a copy.";
+    return "Receiving email requires a custom domain.";
   }
 
   if (mailbox.value.status === "paused") {
-    return "Mailbox capture is paused. Resume it when you want inbound mail handling again.";
+    return "Mailbox paused.";
   }
 
-  return "Alias saved. Activate it when this Core install is ready to handle mailbox traffic.";
+  return "Custom domain setup required.";
 });
-
-const mailboxSaveDisabled = computed(
-  () =>
-    mailboxSaving.value ||
-    !mailboxAliasInput.value.trim() ||
-    (mailboxForwardingEnabled.value && !mailboxForwardingEmail.value.trim()),
-);
 
 const telegramStatusLabel = computed(() => {
   const panel = telegramPanelRef.value;
@@ -695,15 +668,7 @@ async function saveSettings() {
 
 function syncMailboxInputs(response: MailboxResponse) {
   mailboxAvailable.value = response.available;
-  mailboxCloudflareManaged.value = response.cloudflareManaged;
   mailbox.value = response.mailbox;
-  mailboxAliasInput.value =
-    response.mailbox?.aliasLocalPart || response.suggestedAliasLocalPart || "";
-  mailboxForwardingEnabled.value = Boolean(response.mailbox?.forwardingEnabled);
-  mailboxForwardingEmail.value =
-    response.mailbox?.forwardingEmail || auth.user?.email || "";
-  mailboxSources.value = response.sources || [];
-  mailboxRecentActivity.value = response.recentActivity || [];
 }
 
 async function loadMailbox() {
@@ -717,73 +682,6 @@ async function loadMailbox() {
     mailboxError.value = e.message || "Failed to load mailbox";
   } finally {
     mailboxLoading.value = false;
-  }
-}
-
-async function refreshMailbox() {
-  const response = await api.get<MailboxResponse>("/mailbox");
-  syncMailboxInputs(response);
-}
-
-async function saveMailbox() {
-  if (mailboxSaveDisabled.value) return;
-
-  mailboxSaving.value = true;
-  mailboxMessage.value = null;
-  mailboxError.value = null;
-
-  try {
-    await api.put("/mailbox", {
-      aliasLocalPart: mailboxAliasInput.value,
-      forwardingEmail: mailboxForwardingEnabled.value
-        ? mailboxForwardingEmail.value
-        : null,
-      forwardingEnabled: mailboxForwardingEnabled.value,
-    });
-    await refreshMailbox();
-    mailboxMessage.value = mailboxForwardingEnabled.value
-      ? "Mailbox settings saved. Core will keep mail and forward a copy."
-      : "Mailbox settings saved. New mail will stay in ME3 Core.";
-  } catch (e: any) {
-    mailboxError.value = e.message || "Failed to save mailbox";
-  } finally {
-    mailboxSaving.value = false;
-  }
-}
-
-async function activateMailbox() {
-  if (mailboxActivating.value || !mailboxConfigured.value) return;
-
-  mailboxActivating.value = true;
-  mailboxMessage.value = null;
-  mailboxError.value = null;
-
-  try {
-    await api.post("/mailbox/activate", {});
-    await refreshMailbox();
-    mailboxMessage.value = "Mailbox activated.";
-  } catch (e: any) {
-    mailboxError.value = e.message || "Failed to activate mailbox";
-  } finally {
-    mailboxActivating.value = false;
-  }
-}
-
-async function pauseMailbox() {
-  if (mailboxPausing.value) return;
-
-  mailboxPausing.value = true;
-  mailboxMessage.value = null;
-  mailboxError.value = null;
-
-  try {
-    await api.post("/mailbox/pause", {});
-    await refreshMailbox();
-    mailboxMessage.value = "Mailbox paused.";
-  } catch (e: any) {
-    mailboxError.value = e.message || "Failed to pause mailbox";
-  } finally {
-    mailboxPausing.value = false;
   }
 }
 
@@ -1017,7 +915,6 @@ function createEmptyEmailProviderInputs(): Record<
 function syncEmailProviderSettings(response: EmailProviderSettingsResponse) {
   emailProviderEncryptionConfigured.value = response.encryptionConfigured;
   emailProviders.value = response.providers || [];
-  futureEmailProviders.value = response.futureProviders || [];
   selectedEmailProviderId.value = response.activeProviderId || "cloudflare-email";
   emailProviderInputs.value = createEmptyEmailProviderInputs();
 
@@ -1109,29 +1006,6 @@ async function sendEmailProviderTestMessage() {
   } finally {
     emailProviderTesting.value = false;
   }
-}
-
-function emailProviderSourceLabel(provider: EmailProviderRecord): string {
-  switch (provider.source) {
-    case "binding":
-      return "Workers binding";
-    case "stored":
-      return provider.keyHint ? `Stored ${provider.keyHint}` : "Stored token";
-    case "manual":
-      return "Manual setup";
-    default:
-      return provider.secretLabel || "Not configured";
-  }
-}
-
-function formatDateTime(value: string | null): string {
-  if (!value) return "Not yet";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
 }
 
 async function logout() {
@@ -1360,111 +1234,27 @@ onMounted(async () => {
 
             <template v-else-if="mailboxAvailable">
               <p class="hint">
-                Configure the Core-owned mailbox alias and delivery behavior for
-                this install. Hosted billing and production Cloudflare routing
-                stay outside the scaffold.
+                Receiving email requires a custom domain. Configure one here,
+                then ME3 can receive mail at your domain and keep replies in the
+                mailbox.
               </p>
 
-              <div class="mailbox-grid">
-                <label class="field">
-                  <span>Alias</span>
-                  <div class="alias-field">
-                    <input
-                      v-model="mailboxAliasInput"
-                      class="input"
-                      type="text"
-                      placeholder="owner"
-                      autocapitalize="off"
-                      spellcheck="false"
-                    />
-                    <span class="alias-suffix">{{ mailboxAliasDomain }}</span>
-                  </div>
-                </label>
-
-                <label class="field">
-                  <span>Delivery</span>
-                  <label class="mailbox-toggle">
-                    <input v-model="mailboxForwardingEnabled" type="checkbox" />
-                    <span>Forward a copy to another inbox</span>
-                  </label>
-                  <input
-                    v-if="mailboxForwardingEnabled"
-                    v-model="mailboxForwardingEmail"
-                    class="input"
-                    type="email"
-                    placeholder="you@example.com"
-                  />
-                  <p v-else class="field-hint">
-                    Keep incoming mail in ME3 Core only.
-                  </p>
-                </label>
-              </div>
-
-              <div class="button-row">
-                <button
-                  class="button secondary"
-                  type="button"
-                  :disabled="mailboxSaveDisabled"
-                  @click="saveMailbox"
-                >
-                  {{ mailboxSaving ? "Saving..." : "Save mailbox settings" }}
-                </button>
-                <button
-                  v-if="mailbox?.status !== 'active'"
-                  class="button primary"
-                  type="button"
-                  :disabled="mailboxActivating || !mailboxConfigured"
-                  @click="activateMailbox"
-                >
-                  {{
-                    mailboxActivating
-                      ? "Activating..."
-                      : mailbox?.status === "paused"
-                        ? "Resume mailbox"
-                        : "Activate mailbox"
-                  }}
-                </button>
-                <button
-                  v-else
-                  class="button secondary"
-                  type="button"
-                  :disabled="mailboxPausing"
-                  @click="pauseMailbox"
-                >
-                  {{ mailboxPausing ? "Pausing..." : "Pause mailbox" }}
-                </button>
-              </div>
-
-              <div v-if="mailbox" class="mailbox-panel">
+              <div class="mailbox-panel compact-mailbox-panel">
                 <div class="mailbox-panel-head">
-                  <h3>Mailbox health</h3>
-                  <span class="provider-meta">
-                    {{ mailboxCloudflareManaged ? "Cloudflare managed" : "Core local" }}
+                  <h3>Mailbox address</h3>
+                  <span class="status-badge compact setup_required">
+                    Custom domain required
                   </span>
                 </div>
-                <dl class="mailbox-health-list">
-                  <div>
-                    <dt>Alias address</dt>
-                    <dd>{{ mailbox.aliasAddress }}</dd>
-                  </div>
-                  <div>
-                    <dt>Inbound limit</dt>
-                    <dd>{{ mailbox.dailyInboundLimit }} per day</dd>
-                  </div>
-                  <div>
-                    <dt>Outbound limit</dt>
-                    <dd>{{ mailbox.dailyOutboundLimit }} per day</dd>
-                  </div>
-                  <div>
-                    <dt>Activated</dt>
-                    <dd>{{ formatDateTime(mailbox.activatedAt) }}</dd>
-                  </div>
-                </dl>
+                <p class="field-hint">
+                  ME3 needs a real domain on Cloudflare before inbound mail can
+                  be delivered. The custom domain setup flow will live here.
+                </p>
               </div>
 
               <div class="mailbox-panel outbound-sender-panel">
                 <div class="mailbox-panel-head">
-                  <h3>Outbound sender</h3>
+                  <h3>Send email with</h3>
                   <span
                     class="status-badge compact"
                     :class="emailProviderSummaryStatusClass"
@@ -1478,16 +1268,16 @@ onMounted(async () => {
                 </div>
 
                 <template v-else>
-                  <p class="provider-recommendation">
-                    Recommended: Cloudflare Email Service
-                  </p>
                   <p class="hint">
-                    ME3 Core owns mailbox UI, message storage, drafts, send
-                    audit, approvals, and reply workflow. Providers only handle
-                    outbound delivery; inbound transport stays separate.
-                  </p>
-                  <p class="field-hint">
-                    Bring another sender: Postmark, Mailgun, SMTP.
+                    Send approved replies with Cloudflare Email Service. Requires
+                    a verified sending address in Cloudflare.
+                    <a
+                      href="https://developers.cloudflare.com/email-service/api/send-emails/workers-api/"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Setup instructions
+                    </a>
                   </p>
 
                   <p v-if="!emailProviderEncryptionConfigured" class="error">
@@ -1495,76 +1285,20 @@ onMounted(async () => {
                     saved.
                   </p>
 
-                  <div class="email-provider-selector" role="radiogroup">
-                    <button
-                      v-for="provider in emailProviders"
-                      :key="provider.id"
-                      type="button"
-                      class="email-provider-option"
-                      :class="{
-                        'email-provider-option--active':
-                          selectedEmailProviderId === provider.id,
-                      }"
-                      role="radio"
-                      :aria-checked="selectedEmailProviderId === provider.id"
-                      @click="selectedEmailProviderId = provider.id"
-                    >
-                      <span>
-                        <strong>{{ provider.label }}</strong>
-                        <small>{{ provider.description }}</small>
-                      </span>
-                      <span class="plugin-row__badges">
-                        <span v-if="provider.recommended" class="status-pill">
-                          Recommended
-                        </span>
-                        <span
-                          class="status-badge compact"
-                          :class="provider.configured ? 'active' : 'setup_required'"
-                        >
-                          {{ provider.statusLabel }}
-                        </span>
-                      </span>
-                    </button>
-                  </div>
-
-                  <p class="field-hint">
-                    Future adapters:
-                    <span v-if="futureEmailProviders.length">
-                      {{
-                        futureEmailProviders
-                          .map((provider) => provider.label)
-                          .join(", ")
-                      }}
-                    </span>
-                  </p>
+                  <label class="field">
+                    <span>Provider</span>
+                    <select v-model="selectedEmailProviderId" class="input">
+                      <option
+                        v-for="provider in emailProviders"
+                        :key="provider.id"
+                        :value="provider.id"
+                      >
+                        {{ provider.label }}
+                      </option>
+                    </select>
+                  </label>
 
                   <div v-if="activeEmailProvider" class="email-provider-config">
-                    <div class="mailbox-panel-head">
-                      <h4>{{ activeEmailProvider.label }} setup</h4>
-                      <span class="provider-meta">
-                        {{ emailProviderSourceLabel(activeEmailProvider) }}
-                      </span>
-                    </div>
-
-                    <ul class="plugin-setup-list email-provider-setup-list">
-                      <li
-                        v-for="requirement in activeEmailProvider.setupRequirements"
-                        :key="requirement.id"
-                      >
-                        <span
-                          class="setup-dot"
-                          :class="{ configured: requirement.configured }"
-                          aria-hidden="true"
-                        />
-                        <span>
-                          {{ requirement.label }}
-                          <small v-if="requirement.note">
-                            {{ requirement.note }}
-                          </small>
-                        </span>
-                      </li>
-                    </ul>
-
                     <div class="email-provider-fields">
                       <label class="field">
                         <span>From address</span>
@@ -1586,81 +1320,10 @@ onMounted(async () => {
                         />
                       </label>
 
-                      <label class="field">
-                        <span>Reply-to address</span>
-                        <input
-                          v-model="emailProviderInputs[selectedEmailProviderId].replyToAddress"
-                          class="input"
-                          type="email"
-                          placeholder="Optional"
-                        />
-                      </label>
-
-                      <label
-                        v-if="selectedEmailProviderId === 'cloudflare-email'"
-                        class="field"
-                      >
-                        <span>Sending domain</span>
-                        <input
-                          v-model="emailProviderInputs[selectedEmailProviderId].sendingDomain"
-                          class="input"
-                          type="text"
-                          placeholder="example.com"
-                        />
-                      </label>
-
-                      <label
-                        v-if="selectedEmailProviderId === 'cloudflare-email'"
-                        class="field"
-                      >
-                        <span>Cloudflare transport</span>
-                        <select
-                          v-model="emailProviderInputs[selectedEmailProviderId].transport"
-                          class="input"
-                        >
-                          <option value="binding">Workers binding</option>
-                          <option value="rest">REST API</option>
-                        </select>
-                      </label>
-
-                      <label
-                        v-if="
-                          selectedEmailProviderId === 'cloudflare-email' &&
-                          emailProviderInputs[selectedEmailProviderId].transport ===
-                            'rest'
-                        "
-                        class="field"
-                      >
-                        <span>Cloudflare account ID</span>
-                        <input
-                          v-model="emailProviderInputs[selectedEmailProviderId].accountId"
-                          class="input"
-                          type="text"
-                          autocomplete="off"
-                          spellcheck="false"
-                        />
-                      </label>
-
-                      <label
-                        v-if="selectedEmailProviderId === 'postmark'"
-                        class="field"
-                      >
-                        <span>Message stream</span>
-                        <input
-                          v-model="emailProviderInputs[selectedEmailProviderId].messageStream"
-                          class="input"
-                          type="text"
-                          placeholder="outbound"
-                          spellcheck="false"
-                        />
-                      </label>
-
                       <label
                         v-if="
                           activeEmailProvider.secretLabel &&
-                          (selectedEmailProviderId === 'postmark' ||
-                            emailProviderInputs[selectedEmailProviderId].transport ===
-                              'rest')
+                          selectedEmailProviderId === 'postmark'
                         "
                         class="field"
                       >
@@ -1681,18 +1344,6 @@ onMounted(async () => {
                           Existing tokens are encrypted at rest and never
                           returned to the browser.
                         </p>
-                      </label>
-                    </div>
-
-                    <div class="email-provider-test-row">
-                      <label class="field">
-                        <span>Test recipient</span>
-                        <input
-                          v-model="emailProviderTestTo"
-                          class="input"
-                          type="email"
-                          placeholder="you@example.com"
-                        />
                       </label>
                     </div>
 
@@ -1736,67 +1387,6 @@ onMounted(async () => {
                     {{ emailProviderError }}
                   </p>
                 </template>
-              </div>
-
-              <div v-if="mailbox" class="mailbox-panel">
-                <div class="mailbox-panel-head">
-                  <h3>Connected addresses</h3>
-                  <span class="provider-meta">
-                    {{ mailboxSources.length }} address{{
-                      mailboxSources.length === 1 ? "" : "es"
-                    }}
-                  </span>
-                </div>
-                <div v-if="mailboxSources.length" class="mailbox-source-list">
-                  <div
-                    v-for="source in mailboxSources"
-                    :key="source.id"
-                    class="mailbox-source-row"
-                  >
-                    <div class="mailbox-source-main">
-                      <strong>{{ source.address }}</strong>
-                      <span class="provider-meta">
-                        {{ source.type === "me3_alias" ? "ME3 alias" : source.type }}
-                        · {{ source.status }}
-                      </span>
-                    </div>
-                    <span
-                      class="status-badge compact"
-                      :class="source.status"
-                    >
-                      {{ source.outboundEnabled ? "Send enabled" : "Inbound" }}
-                    </span>
-                  </div>
-                </div>
-                <p v-else class="field-hint">
-                  Custom source addresses are not configured in this Core
-                  install yet. The default alias is available after mailbox
-                  settings are saved.
-                </p>
-              </div>
-
-              <div v-if="mailboxRecentActivity.length" class="mailbox-panel">
-                <div class="mailbox-panel-head">
-                  <h3>Recent activity</h3>
-                  <router-link class="provider-meta" to="/email">
-                    Open mailbox
-                  </router-link>
-                </div>
-                <div class="activity-list">
-                  <article
-                    v-for="activity in mailboxRecentActivity.slice(0, 3)"
-                    :key="activity.id"
-                    class="activity-row"
-                  >
-                    <div class="activity-copy">
-                      <strong>{{ activity.subject || "(No subject)" }}</strong>
-                      <p>{{ activity.preview || activity.status }}</p>
-                    </div>
-                    <span class="status-badge compact" :class="activity.status">
-                      {{ activity.status.replace(/_/g, " ") }}
-                    </span>
-                  </article>
-                </div>
               </div>
 
               <p v-if="mailboxMessage" class="success">{{ mailboxMessage }}</p>
@@ -2303,43 +1893,6 @@ h1 {
   gap: 16px;
 }
 
-.mailbox-grid {
-  display: grid;
-  gap: 16px;
-}
-
-.alias-field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.alias-field .input {
-  flex: 1;
-}
-
-.alias-suffix {
-  color: var(--color-text-muted);
-  font-size: 14px;
-  white-space: nowrap;
-}
-
-.mailbox-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 40px;
-  color: var(--color-text);
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.mailbox-toggle input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--color-text);
-}
-
 .field-hint {
   margin: 6px 0 0;
   color: var(--color-text-muted);
@@ -2370,129 +1923,9 @@ h1 {
   gap: 12px;
 }
 
-.provider-meta {
-  color: var(--color-text-muted);
-  font-size: 13px;
-}
-
-.mailbox-health-list {
-  display: grid;
-  gap: 10px;
-  margin: 14px 0 0;
-}
-
-.mailbox-health-list div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--color-border);
-}
-
-.mailbox-health-list dt,
-.mailbox-health-list dd {
-  margin: 0;
-}
-
-.mailbox-health-list dt {
-  color: var(--color-text-muted);
-  font-size: 13px;
-}
-
-.mailbox-health-list dd {
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 700;
-  text-align: right;
-}
-
-.mailbox-source-list,
-.activity-list {
-  display: grid;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.mailbox-source-row,
-.activity-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 0;
-  border-top: 1px solid var(--color-border);
-}
-
-.mailbox-source-main,
-.activity-copy {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.mailbox-source-main strong,
-.activity-copy strong {
-  overflow-wrap: anywhere;
-}
-
-.activity-copy p {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
 .outbound-sender-panel {
   display: grid;
   gap: 14px;
-}
-
-.provider-recommendation {
-  margin: 0;
-  color: var(--ui-accent-strong, var(--color-text));
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.email-provider-selector {
-  display: grid;
-  gap: 10px;
-}
-
-.email-provider-option {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  padding: 12px;
-  border: 1px solid var(--ui-border, var(--color-border));
-  border-radius: var(--ui-radius-md, 12px);
-  background: var(--ui-surface, var(--color-bg));
-  color: var(--ui-text, var(--color-text));
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.email-provider-option--active {
-  border-color: var(--ui-accent, var(--color-text));
-  background: var(--ui-accent-soft, var(--color-bg-subtle));
-}
-
-.email-provider-option span:first-child {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.email-provider-option strong {
-  font-size: 14px;
-}
-
-.email-provider-option small {
-  color: var(--ui-text-muted, var(--color-text-muted));
-  font-size: 12px;
-  line-height: 1.4;
 }
 
 .email-provider-config {
@@ -2502,21 +1935,10 @@ h1 {
   border-top: 1px solid var(--ui-border, var(--color-border));
 }
 
-.email-provider-setup-list {
-  padding: 12px;
-  border: 1px solid var(--ui-border, var(--color-border));
-  border-radius: var(--ui-radius-md, 12px);
-  background: var(--ui-surface-muted, var(--color-bg-subtle));
-}
-
 .email-provider-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
-}
-
-.email-provider-test-row {
-  max-width: 360px;
 }
 
 .plugin-list {
@@ -3052,9 +2474,6 @@ h1 {
 
   .danger-card,
   .email-row,
-  .mailbox-source-row,
-  .activity-row,
-  .email-provider-option,
   .plugin-row__header {
     flex-direction: column;
     align-items: flex-start;
@@ -3072,19 +2491,6 @@ h1 {
 
   .ai-route-fields {
     grid-template-columns: 1fr;
-  }
-
-  .alias-field {
-    flex-wrap: wrap;
-  }
-
-  .mailbox-health-list div {
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .mailbox-health-list dd {
-    text-align: left;
   }
 
   .email-row .button,
