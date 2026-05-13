@@ -63,9 +63,15 @@ import {
 } from "../../../shared/landing-pages";
 import {
   cancelAgentReminder,
+  convertAgentContactToClient,
   createAgentSandboxTurnRecord,
+  createAgentContact,
   createAgentReminder,
+  deleteAgentContact,
+  listAgentContacts,
   serializeAgentReminder,
+  updateAgentContact,
+  updateAgentContactOutreachStatus,
   updateAgentReminder,
   type AgentReminderInput,
 } from "./agent-chat";
@@ -76,7 +82,6 @@ import type {
   DbBooking,
   DbCalendarSource,
   DbCalendarSourceEvent,
-  DbContact,
   DbMailboxAlias,
   DbMailboxMessage,
   DbSite,
@@ -166,23 +171,6 @@ type SiteFileRecord = {
   sha256: string | null;
   updated_at: string;
 };
-type ContactInput = Partial<{
-  name: string;
-  email: string | null;
-  phone: string | null;
-  source: DbContact["source"];
-  sourceRef: string | null;
-  relationship: DbContact["relationship"];
-  closeness: "very_close" | "close" | "acquaintance" | null;
-  status: DbContact["status"];
-  notes: string | null;
-  tags: string[];
-  lastInteractionAt: string | null;
-  nextFollowupAt: string | null;
-  outreachStatus: DbContact["outreach_status"];
-  socialHandles: Record<string, string>;
-  metadata: Record<string, unknown> | null;
-}>;
 type NormalizedMailboxDraftInput = {
   fromAddress: string;
   toAddress: string;
@@ -206,20 +194,7 @@ const USERNAME_REGEX = /^[a-z0-9](?:[a-z0-9_-]{1,28}[a-z0-9])$/;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAILBOX_ALIAS_REGEX = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 const MAILBOX_FOLDERS = new Set(["inbox", "drafts", "sent", "archive", "trash"]);
-const CONTACT_SOURCES = new Set(["booking", "manual", "agent", "import", "outreach", "soulink"]);
-const CONTACT_RELATIONSHIPS = new Set(["client", "prospect", "contact"]);
-const CONTACT_STATUSES = new Set(["active", "archived", "dormant"]);
 const D1_SITE_FILE_MAX_BYTES = 1_900_000;
-const OUTREACH_STATUSES = new Set([
-  "new",
-  "drafted",
-  "sent",
-  "replied",
-  "booked",
-  "converted",
-  "not_interested",
-  "no_response",
-]);
 const LANDING_PAGE_TEMPLATES = new Set<LandingPageTemplateId>(["event", "service", "waitlist"]);
 
 const app = new Hono<{ Bindings: Env }>();
@@ -2700,17 +2675,15 @@ app.post("/api/telegram/disconnect", async (c) => {
 app.get("/api/contacts", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
-  return c.json(await listContacts(c.env, ownerId));
+  return c.json(await listAgentContacts(c.env, ownerId));
 });
 
 app.post("/api/contacts", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
 
-  const input = parseContactInput(await c.req.json().catch(() => null));
-  if (!input.name?.trim()) return c.json({ error: "Contact name is required" }, 400);
-
-  const contact = await insertContact(c.env, ownerId, input);
+  const contact = await createAgentContact(c.env, ownerId, await c.req.json().catch(() => null));
+  if ("error" in contact) return c.json({ error: contact.error }, contact.status as any);
   return c.json({ ok: true, contact }, 201);
 });
 
@@ -2718,9 +2691,13 @@ app.put("/api/contacts/:id", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
 
-  const input = parseContactInput(await c.req.json().catch(() => null));
-  const contact = await updateContact(c.env, ownerId, c.req.param("id"), input);
-  if (!contact) return c.json({ error: "Contact not found" }, 404);
+  const contact = await updateAgentContact(
+    c.env,
+    ownerId,
+    c.req.param("id"),
+    await c.req.json().catch(() => null),
+  );
+  if ("error" in contact) return c.json({ error: contact.error }, contact.status as any);
   return c.json({ ok: true, contact });
 });
 
@@ -2728,11 +2705,9 @@ app.delete("/api/contacts/:id", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
 
-  const result = await c.env.DB.prepare("DELETE FROM contacts WHERE user_id = ? AND id = ?")
-    .bind(ownerId, c.req.param("id"))
-    .run();
-  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Contact not found" }, 404);
-  return c.json({ ok: true });
+  const result = await deleteAgentContact(c.env, ownerId, c.req.param("id"));
+  if ("error" in result) return c.json({ error: result.error }, result.status as any);
+  return c.json(result);
 });
 
 app.put("/api/contacts/:id/outreach-status", async (c) => {
@@ -2742,17 +2717,13 @@ app.put("/api/contacts/:id/outreach-status", async (c) => {
   const body = await c.req
     .json<{ outreachStatus?: string | null; nextFollowupAt?: string | null }>()
     .catch((): { outreachStatus?: string | null; nextFollowupAt?: string | null } => ({}));
-  const outreachStatus = normalizeOutreachStatus(body.outreachStatus);
-  const result = await c.env.DB.prepare(
-    `UPDATE contacts
-     SET outreach_status = ?, next_followup_at = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = ? AND id = ?`,
-  )
-    .bind(outreachStatus, normalizeNullableText(body.nextFollowupAt), ownerId, c.req.param("id"))
-    .run();
-  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Contact not found" }, 404);
-
-  const contact = await getContact(c.env, ownerId, c.req.param("id"));
+  const contact = await updateAgentContactOutreachStatus(
+    c.env,
+    ownerId,
+    c.req.param("id"),
+    body,
+  );
+  if ("error" in contact) return c.json({ error: contact.error }, contact.status as any);
   return c.json({ ok: true, contact });
 });
 
@@ -2760,16 +2731,8 @@ app.post("/api/contacts/:id/convert", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
 
-  const result = await c.env.DB.prepare(
-    `UPDATE contacts
-     SET relationship = 'client', outreach_status = 'converted', updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = ? AND id = ?`,
-  )
-    .bind(ownerId, c.req.param("id"))
-    .run();
-  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Contact not found" }, 404);
-
-  const contact = await getContact(c.env, ownerId, c.req.param("id"));
+  const contact = await convertAgentContactToClient(c.env, ownerId, c.req.param("id"));
+  if ("error" in contact) return c.json({ error: contact.error }, contact.status as any);
   return c.json({ ok: true, contact });
 });
 
@@ -4476,52 +4439,6 @@ function clampNumber(value: string | null | undefined, fallback: number, min: nu
   return Math.max(min, Math.min(max, Math.trunc(parsed)));
 }
 
-function parseContactInput(value: unknown): ContactInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const input = value as Record<string, unknown>;
-  return {
-    name: normalizeNullableText(input.name) || undefined,
-    email: normalizeEmail(input.email),
-    phone: normalizeNullableText(input.phone),
-    source: CONTACT_SOURCES.has(String(input.source)) ? (input.source as DbContact["source"]) : "manual",
-    sourceRef: normalizeNullableText(input.sourceRef),
-    relationship: CONTACT_RELATIONSHIPS.has(String(input.relationship))
-      ? (input.relationship as DbContact["relationship"])
-      : "contact",
-    closeness: normalizeNullableText(input.closeness) as ContactInput["closeness"],
-    status: CONTACT_STATUSES.has(String(input.status)) ? (input.status as DbContact["status"]) : "active",
-    notes: normalizeNullableText(input.notes),
-    tags: Array.isArray(input.tags) ? input.tags.filter((tag): tag is string => typeof tag === "string") : [],
-    lastInteractionAt: normalizeNullableText(input.lastInteractionAt),
-    nextFollowupAt: normalizeNullableText(input.nextFollowupAt),
-    outreachStatus: normalizeOutreachStatus(input.outreachStatus),
-    socialHandles: isPlainObject(input.socialHandles) ? stringRecord(input.socialHandles) : {},
-    metadata: isPlainObject(input.metadata) ? { ...(input.metadata as Record<string, unknown>) } : null,
-  };
-}
-
-async function listContacts(env: Env, ownerId: string) {
-  const rows = await env.DB.prepare(
-    `SELECT c.id, c.user_id, c.name, c.email, c.phone, c.source, c.source_ref,
-            c.relationship, c.status, c.notes, c.tags, c.last_interaction_at,
-            c.next_followup_at, c.outreach_status, c.social_handles, c.metadata,
-            c.created_at, c.updated_at,
-            COUNT(b.id) AS booking_count,
-            MAX(b.starts_at) AS last_booking_at
-     FROM contacts c
-     LEFT JOIN bookings b ON b.guest_email = c.email
-     LEFT JOIN sites s ON s.id = b.site_id AND s.user_id = c.user_id
-     WHERE c.user_id = ?
-     GROUP BY c.id
-     ORDER BY COALESCE(c.last_interaction_at, c.updated_at, c.created_at) DESC`,
-  )
-    .bind(ownerId)
-    .all<DbContact>();
-
-  const contacts = (rows.results || []).map(serializeContact);
-  return { contacts, summary: summarizeContacts(contacts) };
-}
-
 async function getTelegramConnection(env: Env, ownerId: string) {
   return env.DB.prepare(
     `SELECT id, user_id, channel, status, setup_token, telegram_user_id, telegram_chat_id,
@@ -4566,185 +4483,6 @@ async function upsertPendingTelegramConnection(env: Env, ownerId: string) {
   const row = await getTelegramConnection(env, ownerId);
   if (!row) throw new Error("Failed to create Telegram connection");
   return row;
-}
-
-async function insertContact(env: Env, ownerId: string, input: ContactInput) {
-  const id = crypto.randomUUID();
-  const metadata = normalizeContactMetadata(input);
-  await env.DB.prepare(
-    `INSERT INTO contacts (
-       id, user_id, name, email, phone, source, source_ref, relationship, status,
-       notes, tags, last_interaction_at, next_followup_at, outreach_status,
-       social_handles, metadata
-     )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      id,
-      ownerId,
-      input.name,
-      input.email || null,
-      input.phone || null,
-      input.source || "manual",
-      input.sourceRef || null,
-      input.relationship || "contact",
-      input.status || "active",
-      input.notes || null,
-      JSON.stringify(input.tags || []),
-      input.lastInteractionAt || null,
-      input.nextFollowupAt || null,
-      input.outreachStatus || null,
-      JSON.stringify(input.socialHandles || {}),
-      metadata ? JSON.stringify(metadata) : null,
-    )
-    .run();
-
-  return getContact(env, ownerId, id);
-}
-
-async function updateContact(env: Env, ownerId: string, id: string, input: ContactInput) {
-  const existing = await getContactRow(env, ownerId, id);
-  if (!existing) return null;
-
-  const merged: ContactInput = {
-    name: input.name ?? existing.name,
-    email: input.email ?? existing.email,
-    phone: input.phone ?? existing.phone,
-    source: input.source ?? existing.source,
-    sourceRef: input.sourceRef ?? existing.source_ref,
-    relationship: input.relationship ?? existing.relationship,
-    status: input.status ?? existing.status,
-    notes: input.notes ?? existing.notes,
-    tags: input.tags ?? parseJsonArray(existing.tags),
-    lastInteractionAt: input.lastInteractionAt ?? existing.last_interaction_at,
-    nextFollowupAt: input.nextFollowupAt ?? existing.next_followup_at,
-    outreachStatus: input.outreachStatus ?? existing.outreach_status,
-    socialHandles: input.socialHandles ?? stringRecord(parseJsonRecord(existing.social_handles)),
-    metadata: input.metadata ?? parseJsonRecord(existing.metadata),
-    closeness: input.closeness ?? (parseJsonRecord(existing.metadata)?.closeness as ContactInput["closeness"]),
-  };
-  const metadata = normalizeContactMetadata(merged);
-
-  await env.DB.prepare(
-    `UPDATE contacts
-     SET name = ?, email = ?, phone = ?, source = ?, source_ref = ?,
-         relationship = ?, status = ?, notes = ?, tags = ?,
-         last_interaction_at = ?, next_followup_at = ?, outreach_status = ?,
-         social_handles = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
-     WHERE user_id = ? AND id = ?`,
-  )
-    .bind(
-      merged.name,
-      merged.email || null,
-      merged.phone || null,
-      merged.source || "manual",
-      merged.sourceRef || null,
-      merged.relationship || "contact",
-      merged.status || "active",
-      merged.notes || null,
-      JSON.stringify(merged.tags || []),
-      merged.lastInteractionAt || null,
-      merged.nextFollowupAt || null,
-      merged.outreachStatus || null,
-      JSON.stringify(merged.socialHandles || {}),
-      metadata ? JSON.stringify(metadata) : null,
-      ownerId,
-      id,
-    )
-    .run();
-
-  return getContact(env, ownerId, id);
-}
-
-async function getContact(env: Env, ownerId: string, id: string) {
-  const row = await getContactRow(env, ownerId, id);
-  return row ? serializeContact(row) : null;
-}
-
-async function getContactRow(env: Env, ownerId: string, id: string) {
-  return env.DB.prepare(
-    `SELECT id, user_id, name, email, phone, source, source_ref,
-            relationship, status, notes, tags, last_interaction_at,
-            next_followup_at, outreach_status, social_handles, metadata,
-            created_at, updated_at, 0 AS booking_count, NULL AS last_booking_at
-     FROM contacts
-     WHERE user_id = ? AND id = ?`,
-  )
-    .bind(ownerId, id)
-    .first<DbContact>();
-}
-
-function serializeContact(row: DbContact) {
-  const metadata = parseJsonRecord(row.metadata);
-  return {
-    id: row.id,
-    userId: row.user_id,
-    name: row.name,
-    email: row.email,
-    phone: row.phone,
-    source: row.source,
-    sourceRef: row.source_ref,
-    relationship: row.relationship,
-    closeness: typeof metadata.closeness === "string" ? metadata.closeness : null,
-    status: row.status,
-    notes: row.notes,
-    tags: parseJsonArray(row.tags),
-    lastInteractionAt: row.last_interaction_at,
-    nextFollowupAt: row.next_followup_at,
-    outreachStatus: row.outreach_status,
-    socialHandles: stringRecord(parseJsonRecord(row.social_handles)),
-    metadata: Object.keys(metadata).length > 0 ? metadata : null,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    bookingCount: Number(row.booking_count || 0),
-    lastBookingAt: row.last_booking_at || null,
-  };
-}
-
-function summarizeContacts(contacts: ReturnType<typeof serializeContact>[]) {
-  const outreach = {
-    new: 0,
-    drafted: 0,
-    sent: 0,
-    replied: 0,
-    booked: 0,
-    converted: 0,
-    not_interested: 0,
-    no_response: 0,
-  };
-  for (const contact of contacts) {
-    if (contact.outreachStatus && contact.outreachStatus in outreach) {
-      outreach[contact.outreachStatus as keyof typeof outreach] += 1;
-    }
-  }
-  return {
-    total: contacts.length,
-    clients: contacts.filter((contact) => contact.relationship === "client").length,
-    prospects: contacts.filter((contact) => contact.relationship === "prospect").length,
-    contacts: contacts.filter((contact) => contact.relationship === "contact").length,
-    active: contacts.filter((contact) => contact.status === "active").length,
-    dormant: contacts.filter((contact) => contact.status === "dormant").length,
-    archived: contacts.filter((contact) => contact.status === "archived").length,
-    needsFollowUp: contacts.filter((contact) => contact.nextFollowupAt && contact.status === "active").length,
-    outreach,
-  };
-}
-
-function normalizeContactMetadata(input: ContactInput): Record<string, unknown> | null {
-  const metadata = { ...(input.metadata || {}) };
-  if (input.closeness) metadata.closeness = input.closeness;
-  return Object.keys(metadata).length > 0 ? metadata : null;
-}
-
-function normalizeEmail(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const email = value.trim().toLowerCase();
-  return email || null;
-}
-
-function normalizeOutreachStatus(value: unknown): DbContact["outreach_status"] {
-  const normalized = typeof value === "string" ? value.trim() : "";
-  return OUTREACH_STATUSES.has(normalized) ? (normalized as DbContact["outreach_status"]) : null;
 }
 
 function parseJsonRecord(value: string | null): Record<string, unknown> {

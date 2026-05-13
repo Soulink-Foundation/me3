@@ -4,6 +4,7 @@ import type { DbPluginInstallation } from "./plugins";
 import type {
   DbAiModelDefault,
   DbAiProviderCredential,
+  DbContact,
   DbEmailProviderSetting,
   DbEmailSendAudit,
   DbMailboxAlias,
@@ -139,6 +140,7 @@ function createEnv(): Env & {
   emailSends: Array<Record<string, unknown>>;
   mailboxMessages: StoredMailboxMessage[];
   reminders: DbUserReminder[];
+  contacts: DbContact[];
   telegramConnection: StoredTelegramConnection | null;
   sandboxConnection: StoredTelegramConnection | null;
   agentEvents: StoredAgentChannelEvent[];
@@ -161,6 +163,7 @@ function createEnv(): Env & {
     emailSends: [] as Array<Record<string, unknown>>,
     mailboxMessages: [] as StoredMailboxMessage[],
     reminders: [] as DbUserReminder[],
+    contacts: [] as DbContact[],
     telegramConnection: null as StoredTelegramConnection | null,
     sandboxConnection: null as StoredTelegramConnection | null,
     agentEvents: [] as StoredAgentChannelEvent[],
@@ -664,6 +667,31 @@ function createEnv(): Env & {
                 });
               }
 
+              if (sql.includes("INSERT INTO contacts")) {
+                state.contacts.push({
+                  id: values[0] as string,
+                  user_id: values[1] as string,
+                  name: values[2] as string,
+                  email: values[3] as string | null,
+                  phone: values[4] as string | null,
+                  source: values[5] as DbContact["source"],
+                  source_ref: values[6] as string | null,
+                  relationship: values[7] as DbContact["relationship"],
+                  status: values[8] as DbContact["status"],
+                  notes: values[9] as string | null,
+                  tags: values[10] as string | null,
+                  last_interaction_at: values[11] as string | null,
+                  next_followup_at: values[12] as string | null,
+                  outreach_status: values[13] as DbContact["outreach_status"],
+                  social_handles: values[14] as string | null,
+                  metadata: values[15] as string | null,
+                  created_at: "2026-05-13T20:10:00Z",
+                  updated_at: "2026-05-13T20:10:00Z",
+                  booking_count: 0,
+                  last_booking_at: null,
+                });
+              }
+
               if (sql.includes("UPDATE mailbox_aliases") && state.mailbox) {
                 if (sql.includes("alias_local_part = ?")) {
                   state.mailbox.alias_local_part = values[0] as string;
@@ -953,9 +981,23 @@ function createEnv(): Env & {
                 const value = state.installSecrets.get(values[0] as string);
                 return value ? ({ value } as T) : null;
               }
+              if (sql.includes("FROM contacts")) {
+                return (
+                  state.contacts.find(
+                    (contact) => contact.user_id === values[0] && contact.id === values[1],
+                  ) || null
+                ) as T | null;
+              }
               return null;
             },
             async all<T>() {
+              if (sql.includes("FROM contacts")) {
+                return {
+                  results: state.contacts.filter(
+                    (contact) => contact.user_id === values[0],
+                  ) as T[],
+                };
+              }
               if (sql.includes("FROM ai_provider_credentials")) {
                 return {
                   results: state.aiCredentials.filter(
@@ -1080,6 +1122,9 @@ function createEnv(): Env & {
     },
     get reminders() {
       return state.reminders;
+    },
+    get contacts() {
+      return state.contacts;
     },
     get telegramConnection() {
       return state.telegramConnection;
@@ -1723,6 +1768,52 @@ describe("ME3 Core Worker auth", () => {
       user_id: "owner",
       title: "Follow up with Sam",
       recurrence_rule: "weekly:wed",
+    });
+  });
+
+  it("creates owner contacts through the agent chat package surface", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/contacts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: session,
+        },
+        body: JSON.stringify({
+          name: "Sam Client",
+          email: "SAM@EXAMPLE.COM",
+          relationship: "prospect",
+          tags: ["proposal"],
+          closeness: "close",
+          socialHandles: { linkedin: "sam-client" },
+        }),
+      }),
+      env,
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(payload).toMatchObject({
+      ok: true,
+      contact: {
+        name: "Sam Client",
+        email: "sam@example.com",
+        relationship: "prospect",
+        status: "active",
+        closeness: "close",
+        tags: ["proposal"],
+        socialHandles: { linkedin: "sam-client" },
+      },
+    });
+    expect(env.contacts).toHaveLength(1);
+    expect(env.contacts[0]).toMatchObject({
+      user_id: "owner",
+      name: "Sam Client",
+      email: "sam@example.com",
+      relationship: "prospect",
     });
   });
 

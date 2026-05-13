@@ -88,6 +88,82 @@ export type AgentReminderParseResult =
     }
   | { error: string };
 
+export type AgentContactSource =
+  | "booking"
+  | "manual"
+  | "agent"
+  | "import"
+  | "outreach"
+  | "soulink";
+
+export type AgentContactRelationship = "client" | "prospect" | "contact";
+export type AgentContactStatus = "active" | "archived" | "dormant";
+export type AgentContactCloseness = "very_close" | "close" | "acquaintance" | null;
+export type AgentContactOutreachStatus =
+  | "new"
+  | "drafted"
+  | "sent"
+  | "replied"
+  | "booked"
+  | "converted"
+  | "not_interested"
+  | "no_response"
+  | null;
+
+export type AgentContactInput = Partial<{
+  name: string;
+  email: string | null;
+  phone: string | null;
+  source: AgentContactSource;
+  sourceRef: string | null;
+  relationship: AgentContactRelationship;
+  closeness: AgentContactCloseness;
+  status: AgentContactStatus;
+  notes: string | null;
+  tags: string[];
+  lastInteractionAt: string | null;
+  nextFollowupAt: string | null;
+  outreachStatus: AgentContactOutreachStatus;
+  socialHandles: Record<string, string>;
+  metadata: Record<string, unknown> | null;
+}>;
+
+export type AgentContact = {
+  id: string;
+  userId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  source: AgentContactSource;
+  sourceRef: string | null;
+  relationship: AgentContactRelationship;
+  closeness: string | null;
+  status: AgentContactStatus;
+  notes: string | null;
+  tags: string[];
+  lastInteractionAt: string | null;
+  nextFollowupAt: string | null;
+  outreachStatus: AgentContactOutreachStatus;
+  socialHandles: Record<string, string>;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+  bookingCount: number;
+  lastBookingAt: string | null;
+};
+
+export type AgentContactsSummary = {
+  total: number;
+  clients: number;
+  prospects: number;
+  contacts: number;
+  active: number;
+  dormant: number;
+  archived: number;
+  needsFollowUp: number;
+  outreach: Record<Exclude<AgentContactOutreachStatus, null>, number>;
+};
+
 type CoreAgentChatEnv = {
   DB: D1Like;
   AI?: {
@@ -171,6 +247,29 @@ type DbReminderRow = {
   created_at?: string;
 };
 
+type DbContactRow = {
+  id: string;
+  user_id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  source: AgentContactSource;
+  source_ref: string | null;
+  relationship: AgentContactRelationship;
+  status: AgentContactStatus;
+  notes: string | null;
+  tags: string | null;
+  last_interaction_at: string | null;
+  next_followup_at: string | null;
+  outreach_status: AgentContactOutreachStatus;
+  social_handles: string | null;
+  metadata: string | null;
+  created_at: string;
+  updated_at: string;
+  booking_count?: number | string | null;
+  last_booking_at?: string | null;
+};
+
 type D1RunResultLike = {
   meta?: {
     changes?: number;
@@ -191,6 +290,34 @@ const DEFAULT_WORKERS_AI_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8";
 const DEFAULT_OPENAI_MODEL = "gpt-4.1-mini";
 const DEFAULT_ANTHROPIC_MODEL = "claude-3-5-haiku-latest";
 const INSTALL_ENCRYPTION_KEY_NAME = "TOKEN_ENCRYPTION_KEY";
+const CONTACT_SOURCES = new Set<AgentContactSource>([
+  "booking",
+  "manual",
+  "agent",
+  "import",
+  "outreach",
+  "soulink",
+]);
+const CONTACT_RELATIONSHIPS = new Set<AgentContactRelationship>([
+  "client",
+  "prospect",
+  "contact",
+]);
+const CONTACT_STATUSES = new Set<AgentContactStatus>([
+  "active",
+  "archived",
+  "dormant",
+]);
+const OUTREACH_STATUSES = new Set<Exclude<AgentContactOutreachStatus, null>>([
+  "new",
+  "drafted",
+  "sent",
+  "replied",
+  "booked",
+  "converted",
+  "not_interested",
+  "no_response",
+]);
 
 export function isAgentSandboxDispatchInput(
   value: unknown,
@@ -234,6 +361,230 @@ export function parseAgentReminderInput(
   }
 
   return { title, notes, remindAt, timezone, recurrenceRule };
+}
+
+export function parseAgentContactInput(value: unknown): AgentContactInput {
+  if (!isPlainObject(value)) return {};
+  return {
+    name: normalizeNullableText(value.name) || undefined,
+    email: normalizeEmail(value.email),
+    phone: normalizeNullableText(value.phone),
+    source: CONTACT_SOURCES.has(String(value.source) as AgentContactSource)
+      ? (value.source as AgentContactSource)
+      : "manual",
+    sourceRef: normalizeNullableText(value.sourceRef),
+    relationship: CONTACT_RELATIONSHIPS.has(
+      String(value.relationship) as AgentContactRelationship,
+    )
+      ? (value.relationship as AgentContactRelationship)
+      : "contact",
+    closeness: normalizeNullableText(value.closeness) as AgentContactCloseness,
+    status: CONTACT_STATUSES.has(String(value.status) as AgentContactStatus)
+      ? (value.status as AgentContactStatus)
+      : "active",
+    notes: normalizeNullableText(value.notes),
+    tags: Array.isArray(value.tags)
+      ? value.tags.filter((tag): tag is string => typeof tag === "string")
+      : [],
+    lastInteractionAt: normalizeNullableText(value.lastInteractionAt),
+    nextFollowupAt: normalizeNullableText(value.nextFollowupAt),
+    outreachStatus: normalizeContactOutreachStatus(value.outreachStatus),
+    socialHandles: isPlainObject(value.socialHandles)
+      ? stringRecord(value.socialHandles)
+      : {},
+    metadata: isPlainObject(value.metadata)
+      ? { ...(value.metadata as Record<string, unknown>) }
+      : null,
+  };
+}
+
+export async function listAgentContacts(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+): Promise<{ contacts: AgentContact[]; summary: AgentContactsSummary }> {
+  const rows = await env.DB.prepare(
+    `SELECT c.id, c.user_id, c.name, c.email, c.phone, c.source, c.source_ref,
+            c.relationship, c.status, c.notes, c.tags, c.last_interaction_at,
+            c.next_followup_at, c.outreach_status, c.social_handles, c.metadata,
+            c.created_at, c.updated_at,
+            COUNT(b.id) AS booking_count,
+            MAX(b.starts_at) AS last_booking_at
+     FROM contacts c
+     LEFT JOIN bookings b ON b.guest_email = c.email
+     LEFT JOIN sites s ON s.id = b.site_id AND s.user_id = c.user_id
+     WHERE c.user_id = ?
+     GROUP BY c.id
+     ORDER BY COALESCE(c.last_interaction_at, c.updated_at, c.created_at) DESC`,
+  )
+    .bind(userId)
+    .all<DbContactRow>();
+
+  const contacts = (rows.results || []).map(serializeAgentContact);
+  return { contacts, summary: summarizeAgentContacts(contacts) };
+}
+
+export async function createAgentContact(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  value: unknown,
+): Promise<AgentContact | { error: string; status: 400 }> {
+  const input = parseAgentContactInput(value);
+  if (!input.name?.trim()) {
+    return { error: "Contact name is required", status: 400 };
+  }
+
+  const id = crypto.randomUUID();
+  const metadata = normalizeContactMetadata(input);
+  await env.DB.prepare(
+    `INSERT INTO contacts (
+       id, user_id, name, email, phone, source, source_ref, relationship, status,
+       notes, tags, last_interaction_at, next_followup_at, outreach_status,
+       social_handles, metadata
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      userId,
+      input.name,
+      input.email || null,
+      input.phone || null,
+      input.source || "manual",
+      input.sourceRef || null,
+      input.relationship || "contact",
+      input.status || "active",
+      input.notes || null,
+      JSON.stringify(input.tags || []),
+      input.lastInteractionAt || null,
+      input.nextFollowupAt || null,
+      input.outreachStatus || null,
+      JSON.stringify(input.socialHandles || {}),
+      metadata ? JSON.stringify(metadata) : null,
+    )
+    .run();
+
+  const contact = await getAgentContact(env, userId, id);
+  if (!contact) return { error: "Contact not found", status: 400 };
+  return contact;
+}
+
+export async function updateAgentContact(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  contactId: string,
+  value: unknown,
+): Promise<AgentContact | { error: string; status: 404 }> {
+  const input = parseAgentContactInput(value);
+  const existing = await getAgentContactRow(env, userId, contactId);
+  if (!existing) return { error: "Contact not found", status: 404 };
+
+  const merged: AgentContactInput = {
+    name: input.name ?? existing.name,
+    email: input.email ?? existing.email,
+    phone: input.phone ?? existing.phone,
+    source: input.source ?? existing.source,
+    sourceRef: input.sourceRef ?? existing.source_ref,
+    relationship: input.relationship ?? existing.relationship,
+    status: input.status ?? existing.status,
+    notes: input.notes ?? existing.notes,
+    tags: input.tags ?? parseJsonArray(existing.tags),
+    lastInteractionAt: input.lastInteractionAt ?? existing.last_interaction_at,
+    nextFollowupAt: input.nextFollowupAt ?? existing.next_followup_at,
+    outreachStatus: input.outreachStatus ?? existing.outreach_status,
+    socialHandles: input.socialHandles ?? stringRecord(parseJsonRecord(existing.social_handles)),
+    metadata: input.metadata ?? parseJsonRecord(existing.metadata),
+    closeness:
+      input.closeness ??
+      (parseJsonRecord(existing.metadata).closeness as AgentContactCloseness),
+  };
+  const metadata = normalizeContactMetadata(merged);
+
+  await env.DB.prepare(
+    `UPDATE contacts
+     SET name = ?, email = ?, phone = ?, source = ?, source_ref = ?,
+         relationship = ?, status = ?, notes = ?, tags = ?,
+         last_interaction_at = ?, next_followup_at = ?, outreach_status = ?,
+         social_handles = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = ? AND id = ?`,
+  )
+    .bind(
+      merged.name,
+      merged.email || null,
+      merged.phone || null,
+      merged.source || "manual",
+      merged.sourceRef || null,
+      merged.relationship || "contact",
+      merged.status || "active",
+      merged.notes || null,
+      JSON.stringify(merged.tags || []),
+      merged.lastInteractionAt || null,
+      merged.nextFollowupAt || null,
+      merged.outreachStatus || null,
+      JSON.stringify(merged.socialHandles || {}),
+      metadata ? JSON.stringify(metadata) : null,
+      userId,
+      contactId,
+    )
+    .run();
+
+  const contact = await getAgentContact(env, userId, contactId);
+  return contact || { error: "Contact not found", status: 404 };
+}
+
+export async function deleteAgentContact(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  contactId: string,
+): Promise<{ ok: true } | { error: string; status: 404 }> {
+  const result = (await env.DB.prepare("DELETE FROM contacts WHERE user_id = ? AND id = ?")
+    .bind(userId, contactId)
+    .run()) as D1RunResultLike;
+  if ((result.meta?.changes || 0) === 0) {
+    return { error: "Contact not found", status: 404 };
+  }
+  return { ok: true };
+}
+
+export async function updateAgentContactOutreachStatus(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  contactId: string,
+  input: { outreachStatus?: unknown; nextFollowupAt?: unknown },
+): Promise<AgentContact | { error: string; status: 404 }> {
+  const outreachStatus = normalizeContactOutreachStatus(input.outreachStatus);
+  const result = (await env.DB.prepare(
+    `UPDATE contacts
+     SET outreach_status = ?, next_followup_at = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = ? AND id = ?`,
+  )
+    .bind(outreachStatus, normalizeNullableText(input.nextFollowupAt), userId, contactId)
+    .run()) as D1RunResultLike;
+  if ((result.meta?.changes || 0) === 0) {
+    return { error: "Contact not found", status: 404 };
+  }
+
+  const contact = await getAgentContact(env, userId, contactId);
+  return contact || { error: "Contact not found", status: 404 };
+}
+
+export async function convertAgentContactToClient(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  contactId: string,
+): Promise<AgentContact | { error: string; status: 404 }> {
+  const result = (await env.DB.prepare(
+    `UPDATE contacts
+     SET relationship = 'client', outreach_status = 'converted', updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = ? AND id = ?`,
+  )
+    .bind(userId, contactId)
+    .run()) as D1RunResultLike;
+  if ((result.meta?.changes || 0) === 0) {
+    return { error: "Contact not found", status: 404 };
+  }
+
+  const contact = await getAgentContact(env, userId, contactId);
+  return contact || { error: "Contact not found", status: 404 };
 }
 
 export async function createAgentReminder(
@@ -350,6 +701,33 @@ export function serializeAgentReminder(reminder: DbReminderRow): AgentReminder {
   };
 }
 
+export function serializeAgentContact(row: DbContactRow): AgentContact {
+  const metadata = parseJsonRecord(row.metadata);
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone,
+    source: row.source,
+    sourceRef: row.source_ref,
+    relationship: row.relationship,
+    closeness: typeof metadata.closeness === "string" ? metadata.closeness : null,
+    status: row.status,
+    notes: row.notes,
+    tags: parseJsonArray(row.tags),
+    lastInteractionAt: row.last_interaction_at,
+    nextFollowupAt: row.next_followup_at,
+    outreachStatus: row.outreach_status,
+    socialHandles: stringRecord(parseJsonRecord(row.social_handles)),
+    metadata: Object.keys(metadata).length > 0 ? metadata : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    bookingCount: Number(row.booking_count || 0),
+    lastBookingAt: row.last_booking_at || null,
+  };
+}
+
 export async function createAgentSandboxTurnRecord(
   env: Pick<CoreAgentChatEnv, "DB">,
   input: {
@@ -457,10 +835,123 @@ function hasExplicitReminderRecurrence(recurrence: unknown): boolean {
   return normalized !== "" && normalized !== "none";
 }
 
+async function getAgentContact(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  contactId: string,
+): Promise<AgentContact | null> {
+  const row = await getAgentContactRow(env, userId, contactId);
+  return row ? serializeAgentContact(row) : null;
+}
+
+async function getAgentContactRow(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  contactId: string,
+): Promise<DbContactRow | null> {
+  return env.DB.prepare(
+    `SELECT id, user_id, name, email, phone, source, source_ref,
+            relationship, status, notes, tags, last_interaction_at,
+            next_followup_at, outreach_status, social_handles, metadata,
+            created_at, updated_at, 0 AS booking_count, NULL AS last_booking_at
+     FROM contacts
+     WHERE user_id = ? AND id = ?`,
+  )
+    .bind(userId, contactId)
+    .first<DbContactRow>();
+}
+
+function summarizeAgentContacts(contacts: AgentContact[]): AgentContactsSummary {
+  const outreach: AgentContactsSummary["outreach"] = {
+    new: 0,
+    drafted: 0,
+    sent: 0,
+    replied: 0,
+    booked: 0,
+    converted: 0,
+    not_interested: 0,
+    no_response: 0,
+  };
+  for (const contact of contacts) {
+    if (contact.outreachStatus && contact.outreachStatus in outreach) {
+      outreach[contact.outreachStatus] += 1;
+    }
+  }
+  return {
+    total: contacts.length,
+    clients: contacts.filter((contact) => contact.relationship === "client").length,
+    prospects: contacts.filter((contact) => contact.relationship === "prospect").length,
+    contacts: contacts.filter((contact) => contact.relationship === "contact").length,
+    active: contacts.filter((contact) => contact.status === "active").length,
+    dormant: contacts.filter((contact) => contact.status === "dormant").length,
+    archived: contacts.filter((contact) => contact.status === "archived").length,
+    needsFollowUp: contacts.filter(
+      (contact) => contact.nextFollowupAt && contact.status === "active",
+    ).length,
+    outreach,
+  };
+}
+
+function normalizeContactMetadata(
+  input: AgentContactInput,
+): Record<string, unknown> | null {
+  const metadata = { ...(input.metadata || {}) };
+  if (input.closeness) metadata.closeness = input.closeness;
+  return Object.keys(metadata).length > 0 ? metadata : null;
+}
+
+function normalizeEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const email = value.trim().toLowerCase();
+  return email || null;
+}
+
+function normalizeContactOutreachStatus(value: unknown): AgentContactOutreachStatus {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return OUTREACH_STATUSES.has(normalized as Exclude<AgentContactOutreachStatus, null>)
+    ? (normalized as Exclude<AgentContactOutreachStatus, null>)
+    : null;
+}
+
 function normalizeNullableText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized || null;
+}
+
+function parseJsonRecord(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseJsonArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (!isPlainObject(value)) return {};
+  const result: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === "string") result[key] = entry;
+  }
+  return result;
 }
 
 async function upsertSandboxConnection(
