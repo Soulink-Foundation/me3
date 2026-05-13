@@ -43,21 +43,6 @@
       },
       "EMAIL": {
         "description": "Reserved future Cloudflare Email Service send_email binding. The current Core outbound sender is the Postmark adapter."
-      },
-      "JWT_SECRET": {
-        "description": "Generate a random auth signing secret, for example `openssl rand -base64 32`."
-      },
-      "TOKEN_ENCRYPTION_KEY": {
-        "description": "Optional operator override for owner/provider token encryption. If omitted, ME3 Core generates a persistent install key in D1 during owner setup."
-      },
-      "ADMIN_BOOTSTRAP_CODE": {
-        "description": "Generate a one-time local owner bootstrap code, for example `openssl rand -hex 16`."
-      },
-      "OPENAI_API_KEY": {
-        "description": "Optional owner-supplied OpenAI API key for chat/model providers."
-      },
-      "ANTHROPIC_API_KEY": {
-        "description": "Optional owner-supplied Anthropic API key for Claude/model providers."
       }
     }
   }

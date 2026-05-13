@@ -1,6 +1,7 @@
 import type { Env } from "./types";
 
 export const INSTALL_ENCRYPTION_KEY_NAME = "TOKEN_ENCRYPTION_KEY";
+export const INSTALL_SESSION_SECRET_NAME = "JWT_SECRET";
 
 type InstallSecretRow = {
   value: string;
@@ -20,7 +21,17 @@ export async function hasInstallEncryptionKey(env: Env): Promise<boolean> {
 export async function getOrCreateInstallEncryptionKey(env: Env): Promise<string> {
   if (env.TOKEN_ENCRYPTION_KEY) return env.TOKEN_ENCRYPTION_KEY;
 
-  const existing = await getStoredInstallSecret(env, INSTALL_ENCRYPTION_KEY_NAME);
+  return getOrCreateStoredInstallSecret(env, INSTALL_ENCRYPTION_KEY_NAME);
+}
+
+export async function getOrCreateInstallSessionSecret(env: Env): Promise<string> {
+  if (env.JWT_SECRET) return env.JWT_SECRET;
+
+  return getOrCreateStoredInstallSecret(env, INSTALL_SESSION_SECRET_NAME);
+}
+
+async function getOrCreateStoredInstallSecret(env: Env, name: string): Promise<string> {
+  const existing = await getStoredInstallSecret(env, name);
   if (existing?.value) return existing.value;
 
   const generated = generateInstallSecret();
@@ -29,10 +40,10 @@ export async function getOrCreateInstallEncryptionKey(env: Env): Promise<string>
      VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
      ON CONFLICT(name) DO NOTHING`,
   )
-    .bind(INSTALL_ENCRYPTION_KEY_NAME, generated)
+    .bind(name, generated)
     .run();
 
-  const stored = await getStoredInstallSecret(env, INSTALL_ENCRYPTION_KEY_NAME);
+  const stored = await getStoredInstallSecret(env, name);
   return stored?.value || generated;
 }
 

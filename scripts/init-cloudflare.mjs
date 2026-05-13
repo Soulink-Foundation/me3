@@ -87,15 +87,13 @@ if (config !== originalConfig) {
 
 if (!args.skipSecrets) {
   const bootstrapCode = args.bootstrapCode || randomBytes(16).toString("hex");
-  const jwtSecret = randomBytes(32).toString("base64url");
 
-  putSecret("JWT_SECRET", jwtSecret);
   putSecret("ADMIN_BOOTSTRAP_CODE", bootstrapCode);
 
   console.log("");
-  console.log("Remote Worker secrets are set.");
+  console.log("Remote standalone bootstrap secret is set.");
   console.log(`ADMIN_BOOTSTRAP_CODE=${bootstrapCode}`);
-  console.log("Save that bootstrap code somewhere private; it is needed for first owner setup.");
+  console.log("Save that bootstrap code somewhere private; it is needed only for advanced standalone setup or recovery.");
 }
 
 console.log("");

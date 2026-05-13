@@ -4,7 +4,7 @@ Installable ME3 Core personal/business AI assistant scaffold.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Soulink-Foundation/me3)
 
-Fastest path: use the deploy button, sign in to Cloudflare, let Cloudflare fork the repo and provision the Worker bindings, then enter the prompted install secrets. For local development or a manual CLI deploy, use the flows below.
+Fastest path: use the deploy button, sign in to Cloudflare, let Cloudflare fork the repo and provision the Worker bindings. First-run setup starts with **Sign in with ME3**; local-only bootstrap is an advanced fallback.
 
 This repository is intentionally small at first. It is not a raw split of `me3-app`; it is the curated first slice that will become a bootable Cloudflare install template.
 
@@ -44,15 +44,11 @@ pnpm --filter @me3/web dev
 
 ME3 Core's default first-run path is ME3 Cloud claim: sign in with a `me3.app` account to connect this Core install to the ME3 identity network for Soulink and future apps.
 
-Advanced standalone setup remains available for operators who want a local-only install or who are testing before the hosted claim flow is ready. Standalone setup uses these owner auth secrets:
+Advanced standalone setup remains available for operators who want a local-only install or who are testing before the hosted claim flow is ready. Standalone setup uses one owner auth secret:
 
 - `ADMIN_BOOTSTRAP_CODE` unlocks first-run setup and owner credential recovery.
-- `JWT_SECRET` signs the owner session cookie.
 
-ME3 Core creates its install encryption key automatically during owner setup when
-`TOKEN_ENCRYPTION_KEY` is not provided. Operators may still set
-`TOKEN_ENCRYPTION_KEY` as an external secret if they want to manage that key
-outside D1.
+ME3 Core creates its session signing secret and install encryption key automatically in D1 when `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are not provided. Operators may still set those as external secrets if they want to manage keys outside D1.
 
 Local setup:
 
@@ -102,7 +98,7 @@ The Core OSS web app is copied from `me3-app` rather than redesigned from scratc
 
 It intentionally excludes production `me3.app` routes, production Cloudflare account/zone IDs, plugin queues, hosted subscription billing config, and real provider secrets.
 
-`apps/worker/.dev.vars.example` lists secret names only. The first generated local values are:
+`apps/worker/.dev.vars.example` lists local/dev secret names only. `pnpm setup:dev-vars` generates:
 
 - `JWT_SECRET`
 - `TOKEN_ENCRYPTION_KEY`
@@ -122,11 +118,9 @@ The root `wrangler.toml` is the deploy-template config for the Deploy to Cloudfl
 - `SITE_ASSETS` R2 binding for Core file storage
 - `ME3_USER_AGENT` Durable Object namespace
 - optional Workers AI binding
-- optional root custom domain
 - one default Workers AI model
-- root `.dev.vars.example` secret prompts for button-based deploys
 
-Cloudflare should provision supported resources from the Wrangler config during button/template deployment. Required and optional install secrets are described in `package.json`; root `.dev.vars.example` lists the secrets that the deploy button should prompt for.
+Cloudflare should provision supported resources from the Wrangler config during button/template deployment. The deploy button should not ask for owner API keys, custom domains, `JWT_SECRET`, or `ADMIN_BOOTSTRAP_CODE`; those are configured later only if the owner needs them.
 
 ### Deploy Button
 
@@ -134,17 +128,9 @@ Use the button at the top of this README when you want Cloudflare to handle the 
 
 Default setup is **Sign in with ME3**. This connects the Core install to `me3.app` as the coordination layer for identity and future cross-app login.
 
-Standalone fallback setup uses these install secrets:
+Standalone fallback setup uses one install secret: `ADMIN_BOOTSTRAP_CODE`. `JWT_SECRET` and `TOKEN_ENCRYPTION_KEY` are generated and stored in D1 if omitted.
 
-- `JWT_SECRET`: random session signing secret
-- `ADMIN_BOOTSTRAP_CODE`: one-time owner setup code
-
-Optional install secrets:
-
-- `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY`
-
-`TOKEN_ENCRYPTION_KEY` is intentionally optional. If it is omitted, ME3 Core creates a persistent install encryption key in D1 during owner setup.
+OpenAI, Anthropic, email providers, Stripe, OAuth providers, and custom domains are optional owner settings. Configure them later inside the app instead of during the Cloudflare deploy-button flow.
 
 After the first deploy, open the admin URL and choose **Sign in with ME3**. If you need a local-only install, choose **Advanced standalone setup**, enter `ADMIN_BOOTSTRAP_CODE`, and create the owner account.
 
@@ -152,8 +138,7 @@ If the setup screen asks for a bootstrap code and you do not have one yet, creat
 
 1. Open Cloudflare Dashboard -> Workers & Pages -> `me3` -> Settings -> Variables and Secrets.
 2. Add a secret named `ADMIN_BOOTSTRAP_CODE` with a private random value.
-3. Add `JWT_SECRET` too if the setup screen says it is missing.
-4. Save, redeploy the Worker, then enter `ADMIN_BOOTSTRAP_CODE` on the setup screen.
+3. Save, redeploy the Worker, then enter `ADMIN_BOOTSTRAP_CODE` on the setup screen.
 
 ### Manual CLI Deploy
 
@@ -166,7 +151,7 @@ pnpm init:cloudflare
 pnpm deploy
 ```
 
-`pnpm init:cloudflare` creates or reuses the D1 database and R2 bucket, writes the generated D1 database ID into `wrangler.toml`, and sets the required Worker secrets. It prints the generated `ADMIN_BOOTSTRAP_CODE` once; keep it private for first owner setup.
+`pnpm init:cloudflare` creates or reuses the D1 database and R2 bucket, writes the generated D1 database ID into `wrangler.toml`, and sets a standalone `ADMIN_BOOTSTRAP_CODE` secret. It prints that code once; keep it private if you plan to use advanced standalone setup.
 
 Common options:
 
@@ -182,7 +167,7 @@ The `pnpm deploy` script runs the build, remote D1 migrations, R2 provisioning c
 
 ### Recommended Cloudflare Domains
 
-ME3 Core can boot on the generated `workers.dev` URL without a custom domain. Leave `ME3_CUSTOM_DOMAIN` blank during the Cloudflare button deploy if you just want to test the install.
+ME3 Core can boot on the generated `workers.dev` URL without a custom domain. Do not add a custom domain during the deploy-button flow unless you already know you need one.
 
 When an owner is ready to use their own domain, set one root domain:
 

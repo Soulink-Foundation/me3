@@ -51,7 +51,10 @@ import {
   updateContentItem,
   updateSocialProviderSettings,
 } from "./social-publishing";
-import { getOrCreateInstallEncryptionKey } from "./install-secrets";
+import {
+  getOrCreateInstallEncryptionKey,
+  getOrCreateInstallSessionSecret,
+} from "./install-secrets";
 import {
   getLandingPageTemplate,
   type LandingPageDocument,
@@ -313,7 +316,7 @@ app.get("/api/auth/me3/callback", (c) => {
 app.post("/api/admin/bootstrap", async (c) => {
   const body = await c.req.json<BootstrapBody>().catch((): BootstrapBody => ({}));
 
-  if (!c.env.JWT_SECRET || !c.env.ADMIN_BOOTSTRAP_CODE) {
+  if (!c.env.ADMIN_BOOTSTRAP_CODE) {
     return c.json({ ok: false, error: "Owner auth is not configured" }, 503);
   }
 
@@ -4372,9 +4375,7 @@ function toPublicOwner(owner: OwnerRecord): OwnerProfile {
 }
 
 async function setOwnerSession(c: AppContext, ownerId: string) {
-  if (!c.env.JWT_SECRET) {
-    throw new Error("JWT_SECRET is required to issue owner sessions");
-  }
+  const sessionSecret = await getOrCreateInstallSessionSecret(c.env);
 
   const token = await signSessionToken(
     {
@@ -4382,7 +4383,7 @@ async function setOwnerSession(c: AppContext, ownerId: string) {
       iat: currentUnixTime(),
       exp: currentUnixTime() + SESSION_TTL_SECONDS,
     },
-    c.env.JWT_SECRET,
+    sessionSecret,
   );
 
   setCookie(c, SESSION_COOKIE_NAME, token, {
@@ -4404,9 +4405,12 @@ function clearOwnerSession(c: AppContext) {
 
 async function getSessionOwnerId(c: AppContext): Promise<string | null> {
   const token = getCookie(c, SESSION_COOKIE_NAME);
-  if (!token || !c.env.JWT_SECRET) return null;
+  if (!token) return null;
 
-  const payload = await verifySessionToken(token, c.env.JWT_SECRET);
+  const payload = await verifySessionToken(
+    token,
+    await getOrCreateInstallSessionSecret(c.env),
+  );
   if (!payload || payload.exp <= currentUnixTime()) return null;
   if (payload.sub !== "owner") return null;
 
@@ -4557,7 +4561,6 @@ function shouldUseSecureCookie(env: Env): boolean {
 async function getSetupRequired(env: Env, ownerId = "owner"): Promise<string[]> {
   const missing: string[] = [];
 
-  if (!env.JWT_SECRET) missing.push("JWT_SECRET");
   if (!env.ADMIN_BOOTSTRAP_CODE) missing.push("ADMIN_BOOTSTRAP_CODE");
   if (!(await hasConfiguredAiProvider(env, ownerId))) {
     missing.push("AI_PROVIDER");

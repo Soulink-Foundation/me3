@@ -41,10 +41,4 @@ not_found_handling = "single-page-application"
 
 [vars]
 ENVIRONMENT = "production"
-# Optional. Leave blank for the generated workers.dev URL.
-# If set to example.com, Core infers:
-# - admin: me3.example.com
-# - API: api.example.com
-# - public site: www.example.com
-ME3_CUSTOM_DOMAIN = ""
 ME3_AI_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8"

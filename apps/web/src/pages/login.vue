@@ -50,11 +50,8 @@ const useBootstrapCodeInput = computed(
 const missingBootstrapCode = computed(
   () => isSetupMode.value && setupRequired.value.includes("ADMIN_BOOTSTRAP_CODE"),
 );
-const missingJwtSecret = computed(
-  () => isSetupMode.value && setupRequired.value.includes("JWT_SECRET"),
-);
 const missingOwnerSecrets = computed(
-  () => missingBootstrapCode.value || missingJwtSecret.value,
+  () => missingBootstrapCode.value,
 );
 const showBootstrapSetup = computed(
   () => !isSetupMode.value || isResetMode.value || showAdvancedSetup.value,
@@ -282,16 +279,14 @@ onMounted(loadConfig);
         >
           <h1 class="setup-note__title">Finish Cloudflare setup</h1>
           <p v-if="missingBootstrapCode">
-            Add a Worker secret named <code>ADMIN_BOOTSTRAP_CODE</code>, then enter
-            that value here to create the owner account.
-          </p>
-          <p v-if="missingJwtSecret">
-            Add a Worker secret named <code>JWT_SECRET</code> so ME3 can sign owner
-            sessions.
+            Standalone setup needs a private Worker secret named
+            <code>ADMIN_BOOTSTRAP_CODE</code>. Generate one with
+            <code>openssl rand -hex 16</code>, save it in Cloudflare, redeploy,
+            then enter it here.
           </p>
           <p>
             Cloudflare Dashboard -> Workers & Pages -> me3 -> Settings ->
-            Variables and Secrets. Use a private random value, save, and redeploy.
+            Variables and Secrets.
           </p>
         </section>
 

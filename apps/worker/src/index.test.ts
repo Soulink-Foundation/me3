@@ -1057,6 +1057,27 @@ describe("ME3 Core Worker auth", () => {
     expect(config.setupRequired).not.toContain("TOKEN_ENCRYPTION_KEY");
   });
 
+  it("generates a persistent owner session secret when no env JWT secret is provided", async () => {
+    const env = createEnv();
+    env.JWT_SECRET = undefined;
+
+    const response = await bootstrap(env);
+    const session = cookieHeader(response);
+    const meResponse = await app.fetch(
+      new Request("http://localhost/api/auth/me", {
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const configResponse = await app.fetch(new Request("http://localhost/api/config"), env);
+    const config = (await configResponse.json()) as { setupRequired: string[] };
+
+    expect(response.status).toBe(200);
+    expect(meResponse.status).toBe(200);
+    expect(env.installSecrets.get("JWT_SECRET")).toMatch(/^[a-f0-9]{64}$/);
+    expect(config.setupRequired).not.toContain("JWT_SECRET");
+  });
+
   it("reports whether owner password auth is configured", async () => {
     const env = createEnv();
 
