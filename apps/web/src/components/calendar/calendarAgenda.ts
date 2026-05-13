@@ -18,6 +18,7 @@ export interface CalendarAgendaEvent {
   detailLines: CalendarAgendaDetailLine[];
   notes?: string | null;
   actionLabel?: string | null;
+  dangerActionLabel?: string | null;
 }
 
 export interface CalendarAgendaSiteOption {

@@ -17,6 +17,14 @@ import {
   updateEmailProviderSettings,
 } from "./email-providers";
 import {
+  addDaysToDateString,
+  expandRecurringCalendarEvents,
+  getUtcMsForLocalTime,
+  normalizeEventRecurrenceRule,
+  normalizeTimeZone as normalizeCalendarTimeZone,
+  resolveTimeZone,
+} from "./calendar";
+import {
   CORE_PLUGIN_CATALOG_VERSION,
   PluginInstallInputError,
   activateCorePlugin,
@@ -1512,7 +1520,7 @@ app.get("/api/calendar/feed", async (c) => {
       `SELECT id, user_id, title, notes, location, starts_at, ends_at, timezone,
               all_day, kind, recurrence_rule, created_at
        FROM user_calendar_events
-       WHERE user_id = ? AND recurrence_rule = 'yearly'
+       WHERE user_id = ? AND recurrence_rule IS NOT NULL
        ORDER BY starts_at ASC`,
     )
       .bind(ownerId)
@@ -1544,13 +1552,223 @@ app.get("/api/calendar/feed", async (c) => {
     reminders: (reminders.results || []).map(serializeReminder),
     events: [
       ...(events.results || []),
-      ...expandYearlyCalendarEvents(recurringEvents.results || [], window.start, window.end),
+      ...expandRecurringCalendarEvents(recurringEvents.results || [], window.start, window.end),
     ]
       .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
       .map(serializeCalendarEvent),
     sources: (sources.results || []).map(serializeCalendarSource),
     importedEvents: (importedEvents.results || []).map(serializeImportedCalendarEvent),
   });
+});
+
+app.post("/api/calendar/events", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const parsed = await parseCalendarEventBody(c);
+  if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO user_calendar_events
+       (id, user_id, title, notes, location, starts_at, ends_at, timezone, all_day, kind, recurrence_rule)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      ownerId,
+      parsed.title,
+      parsed.notes,
+      parsed.location,
+      parsed.startsAt,
+      parsed.endsAt,
+      parsed.timezone,
+      parsed.allDay ? 1 : 0,
+      parsed.kind,
+      parsed.recurrenceRule,
+    )
+    .run();
+
+  return c.json({
+    ok: true,
+    event: {
+      id,
+      title: parsed.title,
+      notes: parsed.notes,
+      location: parsed.location,
+      startsAt: parsed.startsAt,
+      endsAt: parsed.endsAt,
+      timezone: parsed.timezone,
+      allDay: parsed.allDay,
+      kind: parsed.kind,
+      recurrenceRule: parsed.recurrenceRule,
+      sourceId: null,
+      sourceName: parsed.kind === "birthday" ? "Birthdays" : "Personal events",
+      sourceKind: "native",
+    },
+  });
+});
+
+app.put("/api/calendar/events/:eventId", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const eventId = c.req.param("eventId");
+  const existing = await c.env.DB.prepare(
+    "SELECT id FROM user_calendar_events WHERE id = ? AND user_id = ?",
+  )
+    .bind(eventId, ownerId)
+    .first<{ id: string }>();
+  if (!existing) return c.json({ error: "Event not found" }, 404);
+
+  const parsed = await parseCalendarEventBody(c);
+  if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+
+  await c.env.DB.prepare(
+    `UPDATE user_calendar_events
+     SET title = ?, notes = ?, location = ?, starts_at = ?, ends_at = ?,
+         timezone = ?, all_day = ?, kind = ?, recurrence_rule = ?,
+         updated_at = datetime('now')
+     WHERE id = ? AND user_id = ?`,
+  )
+    .bind(
+      parsed.title,
+      parsed.notes,
+      parsed.location,
+      parsed.startsAt,
+      parsed.endsAt,
+      parsed.timezone,
+      parsed.allDay ? 1 : 0,
+      parsed.kind,
+      parsed.recurrenceRule,
+      eventId,
+      ownerId,
+    )
+    .run();
+
+  return c.json({
+    ok: true,
+    event: {
+      id: eventId,
+      title: parsed.title,
+      notes: parsed.notes,
+      location: parsed.location,
+      startsAt: parsed.startsAt,
+      endsAt: parsed.endsAt,
+      timezone: parsed.timezone,
+      allDay: parsed.allDay,
+      kind: parsed.kind,
+      recurrenceRule: parsed.recurrenceRule,
+      sourceId: null,
+      sourceName: parsed.kind === "birthday" ? "Birthdays" : "Personal events",
+      sourceKind: "native",
+    },
+  });
+});
+
+app.delete("/api/calendar/events/:eventId", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const result = await c.env.DB.prepare(
+    "DELETE FROM user_calendar_events WHERE id = ? AND user_id = ?",
+  )
+    .bind(c.req.param("eventId"), ownerId)
+    .run();
+  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Event not found" }, 404);
+  return c.json({ ok: true });
+});
+
+app.post("/api/agent/reminders", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const parsed = await parseReminderBody(c);
+  if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO user_reminders
+       (id, user_id, title, notes, remind_at, timezone, recurrence_rule, status, created_via)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'agent')`,
+  )
+    .bind(
+      id,
+      ownerId,
+      parsed.title,
+      parsed.notes,
+      parsed.remindAt,
+      parsed.timezone,
+      parsed.recurrenceRule,
+    )
+    .run();
+
+  return c.json({
+    ok: true,
+    reminder: {
+      id,
+      title: parsed.title,
+      notes: parsed.notes,
+      remindAt: parsed.remindAt,
+      timezone: parsed.timezone,
+      recurrenceRule: parsed.recurrenceRule,
+      status: "pending",
+    },
+  });
+});
+
+app.put("/api/agent/reminders/:reminderId", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const parsed = await parseReminderBody(c);
+  if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+
+  const result = await c.env.DB.prepare(
+    `UPDATE user_reminders
+     SET title = ?, notes = ?, remind_at = ?, timezone = ?, recurrence_rule = ?,
+         error_message = NULL, updated_at = datetime('now')
+     WHERE id = ? AND user_id = ? AND status IN ('pending', 'failed')`,
+  )
+    .bind(
+      parsed.title,
+      parsed.notes,
+      parsed.remindAt,
+      parsed.timezone,
+      parsed.recurrenceRule,
+      c.req.param("reminderId"),
+      ownerId,
+    )
+    .run();
+  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Reminder not found" }, 404);
+
+  return c.json({
+    ok: true,
+    reminder: {
+      id: c.req.param("reminderId"),
+      title: parsed.title,
+      notes: parsed.notes,
+      remindAt: parsed.remindAt,
+      timezone: parsed.timezone,
+      recurrenceRule: parsed.recurrenceRule,
+      status: "pending",
+    },
+  });
+});
+
+app.put("/api/agent/reminders/:reminderId/cancel", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const result = await c.env.DB.prepare(
+    `UPDATE user_reminders
+     SET status = 'cancelled', cancelled_at = datetime('now'), updated_at = datetime('now')
+     WHERE id = ? AND user_id = ? AND status IN ('pending', 'failed')`,
+  )
+    .bind(c.req.param("reminderId"), ownerId)
+    .run();
+  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Reminder not found" }, 404);
+  return c.json({ ok: true });
 });
 
 app.get("/api/mailbox", async (c) => {
@@ -3113,6 +3331,168 @@ function parseCalendarWindow(start: string | null | undefined, end: string | nul
   return { start, end };
 }
 
+async function parseCalendarEventBody(c: AppContext): Promise<
+  | {
+      title: string;
+      notes: string | null;
+      location: string | null;
+      startsAt: string;
+      endsAt: string;
+      timezone: string;
+      allDay: boolean;
+      kind: "event" | "birthday";
+      recurrenceRule: string | null;
+    }
+  | { error: string }
+> {
+  const body = (await c.req.json().catch(() => null)) as {
+    title?: unknown;
+    notes?: unknown;
+    location?: unknown;
+    startDate?: unknown;
+    startTime?: unknown;
+    endDate?: unknown;
+    endTime?: unknown;
+    timezone?: unknown;
+    allDay?: unknown;
+    kind?: unknown;
+    recurrenceRule?: unknown;
+  } | null;
+
+  const title = normalizeNullableText(body?.title);
+  const notes = normalizeNullableText(body?.notes);
+  const location = normalizeNullableText(body?.location);
+  const startDate = typeof body?.startDate === "string" ? body.startDate.trim() : "";
+  const endDate = typeof body?.endDate === "string" ? body.endDate.trim() : "";
+  const startTime = typeof body?.startTime === "string" ? body.startTime.trim() : "";
+  const endTime = typeof body?.endTime === "string" ? body.endTime.trim() : "";
+  const kind = body?.kind === "birthday" ? "birthday" : "event";
+  const allDay = kind === "birthday" ? true : body?.allDay === true;
+
+  if (!title) return { error: "Title is required" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    return { error: "Start and end dates must be in YYYY-MM-DD format" };
+  }
+  if (!allDay && (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime))) {
+    return { error: "Start and end times must be in HH:MM format" };
+  }
+
+  const timezone = normalizeCalendarTimeZone(body?.timezone) || "UTC";
+  const recurrenceRule = normalizeEventRecurrenceRule(
+    body?.recurrenceRule,
+    kind,
+    startDate,
+  );
+  if (body?.recurrenceRule && !recurrenceRule) {
+    return { error: "Invalid recurrence value" };
+  }
+
+  const [startYear, startMonth, startDay] = startDate.split("-").map(Number);
+  const [startHour, startMinute] = allDay ? [0, 0] : startTime.split(":").map(Number);
+  const [endHour, endMinute] = allDay ? [0, 0] : endTime.split(":").map(Number);
+  const normalizedEndDate = allDay ? addDaysToDateString(endDate, 1) : endDate;
+  const [endYear, endMonth, endDay] = normalizedEndDate.split("-").map(Number);
+
+  const startsAt = new Date(
+    getUtcMsForLocalTime(
+      { year: startYear, month: startMonth, day: startDay, hour: startHour, minute: startMinute },
+      timezone,
+    ),
+  ).toISOString();
+  const endsAt = new Date(
+    getUtcMsForLocalTime(
+      { year: endYear, month: endMonth, day: endDay, hour: endHour, minute: endMinute },
+      timezone,
+    ),
+  ).toISOString();
+
+  if (new Date(endsAt).getTime() <= new Date(startsAt).getTime()) {
+    return { error: "End must be after start" };
+  }
+
+  return {
+    title,
+    notes,
+    location,
+    startsAt,
+    endsAt,
+    timezone,
+    allDay,
+    kind,
+    recurrenceRule,
+  };
+}
+
+async function parseReminderBody(c: AppContext): Promise<
+  | {
+      title: string;
+      notes: string | null;
+      remindAt: string;
+      timezone: string;
+      recurrenceRule: string | null;
+    }
+  | { error: string }
+> {
+  const body = (await c.req.json().catch(() => null)) as {
+    title?: unknown;
+    notes?: unknown;
+    date?: unknown;
+    time?: unknown;
+    timezone?: unknown;
+    recurrence?: unknown;
+  } | null;
+  const title = normalizeNullableText(body?.title);
+  const notes = normalizeNullableText(body?.notes);
+  const date = typeof body?.date === "string" ? body.date.trim() : "";
+  const time = typeof body?.time === "string" ? body.time.trim() : "";
+
+  if (!title) return { error: "Title is required" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { error: "Date must be in YYYY-MM-DD format" };
+  }
+  if (!/^\d{2}:\d{2}$/.test(time)) {
+    return { error: "Time must be in HH:MM format" };
+  }
+
+  const timezone = normalizeCalendarTimeZone(body?.timezone) || "UTC";
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const remindAt = new Date(
+    getUtcMsForLocalTime({ year, month, day, hour, minute }, timezone),
+  ).toISOString();
+  const recurrenceRule = parseReminderRecurrenceRule(body?.recurrence, date);
+  if (hasExplicitReminderRecurrence(body?.recurrence) && !recurrenceRule) {
+    return { error: "Invalid recurrence value" };
+  }
+
+  return { title, notes, remindAt, timezone, recurrenceRule };
+}
+
+function parseReminderRecurrenceRule(recurrence: unknown, date: string): string | null {
+  const normalized =
+    typeof recurrence === "string" ? recurrence.trim().toLowerCase() : recurrence;
+  if (normalized == null || normalized === "" || normalized === "none") return null;
+  if (normalized === "daily") return "daily";
+
+  const [year, month, day] = date.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  const weekday =
+    ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][
+      new Date(Date.UTC(year, month - 1, day, 12, 0, 0)).getUTCDay()
+    ];
+
+  if (normalized === "weekly") return `weekly:${weekday}`;
+  if (normalized === "monthly") return `monthly:${day}`;
+  return null;
+}
+
+function hasExplicitReminderRecurrence(recurrence: unknown): boolean {
+  if (recurrence == null) return false;
+  if (typeof recurrence !== "string") return true;
+  const normalized = recurrence.trim().toLowerCase();
+  return normalized !== "" && normalized !== "none";
+}
+
 function serializeReminder(reminder: DbUserReminder) {
   return {
     id: reminder.id,
@@ -3179,41 +3559,6 @@ function serializeImportedCalendarEvent(event: DbCalendarSourceEvent & { source_
     sourceKind: "imported",
     createdAt: event.created_at,
   };
-}
-
-function expandYearlyCalendarEvents(
-  events: DbUserCalendarEvent[],
-  windowStart: string,
-  windowEnd: string,
-): DbUserCalendarEvent[] {
-  const startMs = new Date(windowStart).getTime();
-  const endMs = new Date(windowEnd).getTime();
-  const startYear = new Date(windowStart).getUTCFullYear() - 1;
-  const endYear = new Date(windowEnd).getUTCFullYear() + 1;
-  const expanded: DbUserCalendarEvent[] = [];
-
-  for (const event of events) {
-    if (event.recurrence_rule !== "yearly") continue;
-    const originalStart = new Date(event.starts_at);
-    const originalEnd = new Date(event.ends_at);
-    const durationMs = Math.max(1, originalEnd.getTime() - originalStart.getTime());
-
-    for (let year = startYear; year <= endYear; year += 1) {
-      const startsAt = new Date(Date.UTC(
-        year,
-        originalStart.getUTCMonth(),
-        originalStart.getUTCDate(),
-        originalStart.getUTCHours(),
-        originalStart.getUTCMinutes(),
-        originalStart.getUTCSeconds(),
-      ));
-      const endsAt = new Date(startsAt.getTime() + durationMs);
-      if (endsAt.getTime() <= startMs || startsAt.getTime() >= endMs) continue;
-      expanded.push({ ...event, starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString() });
-    }
-  }
-
-  return expanded;
 }
 
 async function getMailboxRow(env: Env, ownerId: string): Promise<DbMailboxAlias | null> {

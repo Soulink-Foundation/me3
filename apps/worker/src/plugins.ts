@@ -1,4 +1,5 @@
 import type { Env } from "./types";
+import { CALENDAR_RUNTIME } from "./calendar";
 import { SOCIAL_PUBLISHING_RUNTIME } from "./social-publishing";
 
 export const CORE_PLUGIN_CATALOG_VERSION = "2026-05-11.v1";
@@ -206,7 +207,115 @@ const SOCIAL_PUBLISHING_PLUGIN: CorePluginManifestSummary = {
   ],
 };
 
+const CALENDAR_PLUGIN: CorePluginManifestSummary = {
+  schemaVersion: CORE_PLUGIN_CATALOG_VERSION,
+  id: "me3.calendar",
+  name: "ME3 Calendar",
+  version: "0.1.0",
+  description:
+    "First-party calendar workspace for bookings, reminders, personal events, birthdays, imported calendars, and recurring event expansion.",
+  trustTier: "first_party",
+  distribution: "workspace_package",
+  installMode: "enabled_by_owner_config",
+  implementationStatus: CALENDAR_RUNTIME.bundled ? "bundled" : "catalog_only",
+  capabilityIds: ["workspace.calendar"],
+  permissions: [
+    {
+      id: "calendar.events.manage",
+      label: "Create and manage personal calendar events",
+    },
+    {
+      id: "calendar.reminders.manage",
+      label: "Create and manage owner reminders",
+    },
+  ],
+  routes: [
+    {
+      id: "calendar.feed.api",
+      path: "/api/calendar/feed",
+      methods: ["GET"],
+      auth: "owner",
+    },
+    {
+      id: "calendar.events.api",
+      path: "/api/calendar/events",
+      methods: ["POST"],
+      auth: "owner",
+    },
+    {
+      id: "calendar.event.api",
+      path: "/api/calendar/events/:id",
+      methods: ["PUT", "DELETE"],
+      auth: "owner",
+    },
+    {
+      id: "calendar.reminders.api",
+      path: "/api/agent/reminders",
+      methods: ["POST"],
+      auth: "owner",
+    },
+    {
+      id: "calendar.reminder.api",
+      path: "/api/agent/reminders/:id",
+      methods: ["PUT"],
+      auth: "owner",
+    },
+    {
+      id: "calendar.reminder.cancel.api",
+      path: "/api/agent/reminders/:id/cancel",
+      methods: ["PUT"],
+      auth: "owner",
+    },
+  ],
+  uiSlots: [
+    {
+      id: "calendar.dashboard.nav",
+      slot: "dashboard.nav",
+      label: "Calendar",
+    },
+    {
+      id: "calendar.workspace.panel",
+      slot: "dashboard.panel",
+      label: "Calendar",
+    },
+  ],
+  agentTools: [
+    {
+      id: "calendar.event.create",
+      label: "Create calendar event",
+      sideEffect: "internal_write",
+      approvalMode: "approval_required",
+    },
+    {
+      id: "calendar.reminder.create",
+      label: "Create reminder",
+      sideEffect: "internal_write",
+      approvalMode: "approval_required",
+    },
+  ],
+  secrets: [],
+  migrations: [
+    {
+      id: "calendar.0003",
+      path: "./apps/worker/migrations/0003_workspace_surfaces.sql",
+      destructive: false,
+    },
+    {
+      id: "calendar.0013",
+      path: "./apps/worker/migrations/0013_calendar_plugin_recurrence.sql",
+      destructive: false,
+    },
+  ],
+  queuesAndCrons: [],
+  notes: [
+    "Bundled through @me3-core/plugin-calendar as a first-party Core package.",
+    "Calendar is currently a default workspace surface while plugin install state becomes the long-term owner configuration surface.",
+    "Recurring event normalization and feed expansion live in the plugin package so hosted ME3 can mirror the same behavior.",
+  ],
+};
+
 export const CORE_PLUGIN_CATALOG: readonly CorePluginManifestSummary[] = [
+  CALENDAR_PLUGIN,
   SOCIAL_PUBLISHING_PLUGIN,
 ];
 

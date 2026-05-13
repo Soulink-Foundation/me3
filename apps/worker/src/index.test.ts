@@ -1352,14 +1352,33 @@ describe("ME3 Core Worker auth", () => {
 
     expect(response.status).toBe(200);
     expect(body.catalogVersion).toMatch(/^\d{4}-\d{2}-\d{2}\.v\d+$/);
-    expect(body.plugins).toEqual([
-      expect.objectContaining({
-        id: "me3.social-publishing",
-        status: "available",
-        implementationStatus: "bundled",
-      }),
-    ]);
-    expect(body.plugins[0].agentTools).toEqual(
+    expect(body.plugins).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "me3.calendar",
+          status: "available",
+          implementationStatus: "bundled",
+        }),
+        expect.objectContaining({
+          id: "me3.social-publishing",
+          status: "available",
+          implementationStatus: "bundled",
+        }),
+      ]),
+    );
+    const socialPlugin = body.plugins.find(
+      (plugin) => plugin.id === "me3.social-publishing",
+    );
+    const calendarPlugin = body.plugins.find((plugin) => plugin.id === "me3.calendar");
+    expect(calendarPlugin?.agentTools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "calendar.event.create",
+          approvalMode: "approval_required",
+        }),
+      ]),
+    );
+    expect(socialPlugin?.agentTools).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "content.publish",
@@ -1367,7 +1386,7 @@ describe("ME3 Core Worker auth", () => {
         }),
       ]),
     );
-    expect(body.plugins[0].setupRequirements).toEqual(
+    expect(socialPlugin?.setupRequirements).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           kind: "package",
@@ -1440,12 +1459,14 @@ describe("ME3 Core Worker auth", () => {
       plugins: Array<{ id: string; status: string }>;
     };
 
-    expect(catalog.plugins).toEqual([
-      expect.objectContaining({
-        id: "me3.social-publishing",
-        status: "installed",
-      }),
-    ]);
+    expect(catalog.plugins).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "me3.social-publishing",
+          status: "installed",
+        }),
+      ]),
+    );
   });
 
   it("activates Social Publishing after generating install encryption during setup", async () => {

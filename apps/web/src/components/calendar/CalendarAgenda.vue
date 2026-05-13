@@ -42,6 +42,7 @@ const props = withDefaults(
 );
 const emit = defineEmits<{
   (e: "event-action", event: CalendarAgendaEvent): void;
+  (e: "event-danger-action", event: CalendarAgendaEvent): void;
   (e: "range-change", mode: CalendarRangeMode): void;
   (e: "clear-focus"): void;
   (e: "consumed-prefer-select"): void;
@@ -264,6 +265,15 @@ watch(
         </button>
 
         <button
+          v-if="selectedEvent.dangerActionLabel"
+          type="button"
+          class="calendar-detail-action calendar-detail-action--danger"
+          @click="emit('event-danger-action', selectedEvent)"
+        >
+          {{ selectedEvent.dangerActionLabel }}
+        </button>
+
+        <button
           v-if="selectedEvent.sourceLabel === 'Booking'"
           type="button"
           class="calendar-detail-action calendar-detail-action--danger"
@@ -368,6 +378,15 @@ watch(
             @click="emit('event-action', selectedEvent)"
           >
             {{ selectedEvent.actionLabel }}
+          </button>
+
+          <button
+            v-if="selectedEvent.dangerActionLabel"
+            type="button"
+            class="calendar-detail-action calendar-detail-action--danger"
+            @click="emit('event-danger-action', selectedEvent)"
+          >
+            {{ selectedEvent.dangerActionLabel }}
           </button>
 
           <button

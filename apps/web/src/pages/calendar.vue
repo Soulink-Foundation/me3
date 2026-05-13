@@ -257,6 +257,7 @@ const newReminderForm = ref({
   recurrence: "none",
   notes: "",
 });
+const editingReminderId = ref<string | null>(null);
 
 const newEventSubmitting = ref(false);
 const newEventError = ref("");
@@ -268,9 +269,11 @@ const newEventForm = ref({
   endTime: "",
   timezone: defaultFormTimeZone,
   allDay: false,
+  recurrence: "none",
   location: "",
   notes: "",
 });
+const editingEventId = ref<string | null>(null);
 
 const newBirthdayForm = ref({
   name: "",
@@ -326,6 +329,14 @@ const quickCreateDateLabel = computed(() => {
 
 const quickCreateTitle = computed(() => `Add to ${quickCreateDateLabel.value}`);
 
+const quickCreateHeading = computed(() => {
+  const mode = activeCreateMode.value;
+  if ((editingEventId.value || editingReminderId.value) && isQuickCreateMode(mode)) {
+    return `Edit ${QUICK_CREATE_LABELS[mode].toLowerCase()}`;
+  }
+  return quickCreateTitle.value;
+});
+
 const activeToolbarTitle = computed(() => {
   if (rangeMode.value === "schedule") return monthToolbarTitle.value;
   if (rangeMode.value === "day") return dayToolbarTitle.value;
@@ -354,6 +365,13 @@ function formatReminderRecurrence(rule: string): string {
 }
 
 function formatEventRecurrence(rule: string | null | undefined): string {
+  if (rule === "daily") return "Daily";
+  if (rule?.startsWith("weekly:")) {
+    return `Weekly on ${rule.slice("weekly:".length).replace(/,/g, ", ")}`;
+  }
+  if (rule?.startsWith("monthly:")) {
+    return `Monthly on day ${rule.slice("monthly:".length)}`;
+  }
   if (rule === "yearly") return "Yearly";
   return rule || "";
 }
@@ -438,6 +456,25 @@ function defaultTimeInput(offsetHours = 1): string {
   return `${hours}:${minutes}`;
 }
 
+function dateInputFromIso(value: string, subtractDays = 0): string {
+  const d = new Date(value);
+  if (subtractDays) d.setDate(d.getDate() - subtractDays);
+  return dayKeyFormatter.value.format(d);
+}
+
+function timeInputFromIso(value: string): string {
+  const d = new Date(value);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function recurrenceInputFromRule(rule: string | null | undefined): string {
+  if (!rule) return "none";
+  if (rule === "daily" || rule === "yearly") return rule;
+  if (rule.startsWith("weekly:")) return "weekly";
+  if (rule.startsWith("monthly:")) return "monthly";
+  return "none";
+}
+
 function preferredCreateDate(): string {
   return focusedDayKey.value || defaultDateInput();
 }
@@ -488,7 +525,8 @@ function mapReminderToCalendarEvent(
         : []),
     ],
     notes: reminder.notes,
-    actionLabel: "Cancel reminder",
+    actionLabel: "Edit reminder",
+    dangerActionLabel: "Cancel reminder",
   };
 }
 
@@ -536,7 +574,8 @@ function mapEventToCalendarEvent(event: CalendarEventRow): CalendarAgendaEvent {
           ]),
     ],
     notes: event.notes,
-    actionLabel: isImported ? null : "Delete event",
+    actionLabel: isImported ? null : "Edit event",
+    dangerActionLabel: isImported ? null : "Delete event",
   };
 }
 
@@ -646,6 +685,17 @@ async function deleteCalendarEvent(eventId: string) {
 }
 
 function handleEventAction(event: CalendarAgendaEvent) {
+  if (event.sourceLabel === "Reminder") {
+    openEditReminder(event.id);
+    return;
+  }
+
+  if (event.sourceLabel === "Event" || event.sourceLabel === "Birthday") {
+    openEditEvent(event.id);
+  }
+}
+
+function handleEventDangerAction(event: CalendarAgendaEvent) {
   if (event.sourceLabel === "Reminder") {
     void cancelReminder(event.id);
     return;
@@ -881,6 +931,7 @@ function resetBookingForm() {
 }
 
 function resetReminderForm() {
+  editingReminderId.value = null;
   newReminderError.value = "";
   newReminderForm.value = {
     title: "",
@@ -894,6 +945,7 @@ function resetReminderForm() {
 
 function resetEventForm() {
   const date = preferredCreateDate();
+  editingEventId.value = null;
   newEventError.value = "";
   newEventForm.value = {
     title: "",
@@ -903,12 +955,14 @@ function resetEventForm() {
     endTime: defaultTimeInput(2),
     timezone: defaultFormTimeZone,
     allDay: false,
+    recurrence: "none",
     location: "",
     notes: "",
   };
 }
 
 function resetBirthdayForm() {
+  editingEventId.value = null;
   newEventError.value = "";
   newBirthdayForm.value = {
     name: "",
@@ -952,6 +1006,59 @@ function switchQuickCreateMode(mode: QuickCreateMode) {
   activeCreateMode.value = mode;
 }
 
+function openEditReminder(reminderId: string) {
+  const reminder = reminders.value.find((item) => item.id === reminderId);
+  if (!reminder) return;
+  showCreateMenu.value = false;
+  statusMessage.value = "";
+  newReminderError.value = "";
+  editingReminderId.value = reminder.id;
+  quickCreateDayKey.value = dateInputFromIso(reminder.remindAt);
+  newReminderForm.value = {
+    title: reminder.title,
+    date: dateInputFromIso(reminder.remindAt),
+    time: timeInputFromIso(reminder.remindAt),
+    timezone: reminder.timezone || defaultFormTimeZone,
+    recurrence: recurrenceInputFromRule(reminder.recurrenceRule),
+    notes: reminder.notes || "",
+  };
+  activeCreateMode.value = "reminder";
+}
+
+function openEditEvent(eventId: string) {
+  const event = events.value.find((item) => item.id === eventId);
+  if (!event) return;
+  showCreateMenu.value = false;
+  statusMessage.value = "";
+  newEventError.value = "";
+  editingEventId.value = event.id;
+  quickCreateDayKey.value = dateInputFromIso(event.startsAt);
+
+  if (event.kind === "birthday") {
+    newBirthdayForm.value = {
+      name: event.title.replace(/'s birthday$/i, ""),
+      date: dateInputFromIso(event.startsAt),
+      notes: event.notes || "",
+    };
+    activeCreateMode.value = "birthday";
+    return;
+  }
+
+  newEventForm.value = {
+    title: event.title,
+    startDate: dateInputFromIso(event.startsAt),
+    startTime: event.allDay ? "" : timeInputFromIso(event.startsAt),
+    endDate: dateInputFromIso(event.endsAt, event.allDay ? 1 : 0),
+    endTime: event.allDay ? "" : timeInputFromIso(event.endsAt),
+    timezone: event.timezone || defaultFormTimeZone,
+    allDay: event.allDay,
+    recurrence: recurrenceInputFromRule(event.recurrenceRule),
+    location: event.location || "",
+    notes: event.notes || "",
+  };
+  activeCreateMode.value = "event";
+}
+
 function isQuickCreateMode(mode: CreateMode): mode is QuickCreateMode {
   return (
     mode === "event" ||
@@ -965,6 +1072,8 @@ function closeCreateMode() {
   activeCreateMode.value = null;
   showCreateMenu.value = false;
   quickCreateDayKey.value = null;
+  editingEventId.value = null;
+  editingReminderId.value = null;
 }
 
 async function submitNewBooking() {
@@ -1020,20 +1129,28 @@ async function submitNewReminder() {
 
   newReminderSubmitting.value = true;
   try {
-    const response = await api.post<{ ok: boolean; reminder: { id: string } }>(
-      "/agent/reminders",
-      {
-        title: form.title.trim(),
-        date: form.date,
-        time: form.time,
-        timezone: form.timezone,
-        recurrence: form.recurrence,
-        notes: form.notes.trim() || undefined,
-      },
-    );
+    const payload = {
+      title: form.title.trim(),
+      date: form.date,
+      time: form.time,
+      timezone: form.timezone,
+      recurrence: form.recurrence,
+      notes: form.notes.trim() || undefined,
+    };
+    const response = editingReminderId.value
+      ? await api.put<{ ok: boolean; reminder: { id: string } }>(
+          `/agent/reminders/${editingReminderId.value}`,
+          payload,
+        )
+      : await api.post<{ ok: boolean; reminder: { id: string } }>(
+          "/agent/reminders",
+          payload,
+        );
     preferSelectEventId.value = response.reminder.id;
     boardHighlightId.value = response.reminder.id;
-    statusMessage.value = "Reminder added to your calendar.";
+    statusMessage.value = editingReminderId.value
+      ? "Reminder updated."
+      : "Reminder added to your calendar.";
     closeCreateMode();
     await reloadCalendar();
   } catch (err) {
@@ -1042,7 +1159,7 @@ async function submitNewReminder() {
         ? err.message
         : err instanceof Error
           ? err.message
-          : "Could not create reminder.";
+          : "Could not save reminder.";
   } finally {
     newReminderSubmitting.value = false;
   }
@@ -1058,23 +1175,32 @@ async function submitNewEvent() {
 
   newEventSubmitting.value = true;
   try {
-    const response = await api.post<{ ok: boolean; event: { id: string } }>(
-      "/calendar/events",
-      {
-        title: form.title.trim(),
-        startDate: form.startDate,
-        startTime: form.startTime,
-        endDate: form.endDate,
-        endTime: form.endTime,
-        timezone: form.timezone,
-        allDay: form.allDay,
-        location: form.location.trim() || undefined,
-        notes: form.notes.trim() || undefined,
-      },
-    );
+    const payload = {
+      title: form.title.trim(),
+      startDate: form.startDate,
+      startTime: form.startTime,
+      endDate: form.endDate,
+      endTime: form.endTime,
+      timezone: form.timezone,
+      allDay: form.allDay,
+      recurrenceRule: form.recurrence,
+      location: form.location.trim() || undefined,
+      notes: form.notes.trim() || undefined,
+    };
+    const response = editingEventId.value
+      ? await api.put<{ ok: boolean; event: { id: string } }>(
+          `/calendar/events/${editingEventId.value}`,
+          payload,
+        )
+      : await api.post<{ ok: boolean; event: { id: string } }>(
+          "/calendar/events",
+          payload,
+        );
     preferSelectEventId.value = response.event.id;
     boardHighlightId.value = response.event.id;
-    statusMessage.value = "Event added to your calendar.";
+    statusMessage.value = editingEventId.value
+      ? "Event updated."
+      : "Event added to your calendar.";
     closeCreateMode();
     await reloadCalendar();
   } catch (err) {
@@ -1083,7 +1209,7 @@ async function submitNewEvent() {
         ? err.message
         : err instanceof Error
           ? err.message
-          : "Could not create event.";
+          : "Could not save event.";
   } finally {
     newEventSubmitting.value = false;
   }
@@ -1099,22 +1225,30 @@ async function submitNewBirthday() {
 
   newEventSubmitting.value = true;
   try {
-    const response = await api.post<{ ok: boolean; event: { id: string } }>(
-      "/calendar/events",
-      {
-        title: `${form.name.trim()}'s birthday`,
-        startDate: form.date,
-        endDate: form.date,
-        timezone: defaultFormTimeZone,
-        allDay: true,
-        kind: "birthday",
-        recurrenceRule: "yearly",
-        notes: form.notes.trim() || undefined,
-      },
-    );
+    const payload = {
+      title: `${form.name.trim()}'s birthday`,
+      startDate: form.date,
+      endDate: form.date,
+      timezone: defaultFormTimeZone,
+      allDay: true,
+      kind: "birthday",
+      recurrenceRule: "yearly",
+      notes: form.notes.trim() || undefined,
+    };
+    const response = editingEventId.value
+      ? await api.put<{ ok: boolean; event: { id: string } }>(
+          `/calendar/events/${editingEventId.value}`,
+          payload,
+        )
+      : await api.post<{ ok: boolean; event: { id: string } }>(
+          "/calendar/events",
+          payload,
+        );
     preferSelectEventId.value = response.event.id;
     boardHighlightId.value = response.event.id;
-    statusMessage.value = "Birthday added to your calendar.";
+    statusMessage.value = editingEventId.value
+      ? "Birthday updated."
+      : "Birthday added to your calendar.";
     closeCreateMode();
     await reloadCalendar();
   } catch (err) {
@@ -1123,7 +1257,7 @@ async function submitNewBirthday() {
         ? err.message
         : err instanceof Error
           ? err.message
-          : "Could not create birthday.";
+          : "Could not save birthday.";
   } finally {
     newEventSubmitting.value = false;
   }
@@ -1485,6 +1619,7 @@ onBeforeUnmount(() => {
                 @clear-focus="focusedDayKey = null"
                 @consumed-prefer-select="preferSelectEventId = null"
                 @event-action="handleEventAction"
+                @event-danger-action="handleEventDangerAction"
                 @cancel-booking="handleCancelBooking"
               />
               <CalendarAgenda
@@ -1500,6 +1635,7 @@ onBeforeUnmount(() => {
                 :cancelling-booking-id="cancellingBookingId"
                 hide-site-filter
                 @event-action="handleEventAction"
+                @event-danger-action="handleEventDangerAction"
                 @cancel-booking="handleCancelBooking"
                 @clear-focus="focusedDayKey = null"
                 @consumed-prefer-select="preferSelectEventId = null"
@@ -1608,6 +1744,15 @@ onBeforeUnmount(() => {
         </button>
 
         <button
+          v-if="selectedBoardEvent.dangerActionLabel"
+          type="button"
+          class="event-detail-action event-detail-action--danger"
+          @click="handleEventDangerAction(selectedBoardEvent)"
+        >
+          {{ selectedBoardEvent.dangerActionLabel }}
+        </button>
+
+        <button
           v-if="selectedBoardEvent.sourceLabel === 'Booking'"
           type="button"
           class="event-detail-action event-detail-action--danger"
@@ -1637,7 +1782,7 @@ onBeforeUnmount(() => {
         <div class="modal-header">
           <div>
             <p class="modal-kicker">Quick create</p>
-            <h2 id="quick-create-title">{{ quickCreateTitle }}</h2>
+            <h2 id="quick-create-title">{{ quickCreateHeading }}</h2>
           </div>
           <button
             type="button"
@@ -1727,6 +1872,17 @@ onBeforeUnmount(() => {
           </div>
 
           <label>
+            <span>Repeat</span>
+            <select v-model="newEventForm.recurrence">
+              <option value="none">Does not repeat</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="yearly">Yearly</option>
+            </select>
+          </label>
+
+          <label>
             <span>Notes</span>
             <textarea
               v-model="newEventForm.notes"
@@ -1753,7 +1909,15 @@ onBeforeUnmount(() => {
               variant="primary"
               :disabled="newEventSubmitting"
             >
-              {{ newEventSubmitting ? "Creating…" : "Create event" }}
+              {{
+                newEventSubmitting
+                  ? editingEventId
+                    ? "Updating…"
+                    : "Creating…"
+                  : editingEventId
+                    ? "Update event"
+                    : "Create event"
+              }}
             </Button>
           </div>
         </form>
@@ -1812,7 +1976,15 @@ onBeforeUnmount(() => {
               variant="primary"
               :disabled="newEventSubmitting"
             >
-              {{ newEventSubmitting ? "Creating…" : "Create birthday" }}
+              {{
+                newEventSubmitting
+                  ? editingEventId
+                    ? "Updating…"
+                    : "Creating…"
+                  : editingEventId
+                    ? "Update birthday"
+                    : "Create birthday"
+              }}
             </Button>
           </div>
         </form>
@@ -1896,7 +2068,15 @@ onBeforeUnmount(() => {
               variant="primary"
               :disabled="newReminderSubmitting"
             >
-              {{ newReminderSubmitting ? "Creating…" : "Create reminder" }}
+              {{
+                newReminderSubmitting
+                  ? editingReminderId
+                    ? "Updating…"
+                    : "Creating…"
+                  : editingReminderId
+                    ? "Update reminder"
+                    : "Create reminder"
+              }}
             </Button>
           </div>
         </form>
