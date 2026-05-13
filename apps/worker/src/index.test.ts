@@ -8,6 +8,7 @@ import type {
   DbEmailSendAudit,
   DbMailboxAlias,
   DbMailboxMessage,
+  DbUserReminder,
   Env,
   OwnerProfile,
 } from "./types";
@@ -137,6 +138,7 @@ function createEnv(): Env & {
   emailSendAudit: DbEmailSendAudit[];
   emailSends: Array<Record<string, unknown>>;
   mailboxMessages: StoredMailboxMessage[];
+  reminders: DbUserReminder[];
   telegramConnection: StoredTelegramConnection | null;
   sandboxConnection: StoredTelegramConnection | null;
   agentEvents: StoredAgentChannelEvent[];
@@ -158,6 +160,7 @@ function createEnv(): Env & {
     emailSendAudit: [] as DbEmailSendAudit[],
     emailSends: [] as Array<Record<string, unknown>>,
     mailboxMessages: [] as StoredMailboxMessage[],
+    reminders: [] as DbUserReminder[],
     telegramConnection: null as StoredTelegramConnection | null,
     sandboxConnection: null as StoredTelegramConnection | null,
     agentEvents: [] as StoredAgentChannelEvent[],
@@ -642,6 +645,25 @@ function createEnv(): Env & {
                 };
               }
 
+              if (sql.includes("INSERT INTO user_reminders")) {
+                state.reminders.push({
+                  id: values[0] as string,
+                  user_id: values[1] as string,
+                  title: values[2] as string,
+                  notes: values[3] as string | null,
+                  remind_at: values[4] as string,
+                  timezone: values[5] as string | null,
+                  recurrence_rule: values[6] as string | null,
+                  context_type: null,
+                  context_id: null,
+                  context_label: null,
+                  status: "pending",
+                  delivered_at: null,
+                  dismissed_at: null,
+                  created_at: "2026-05-13T20:00:00Z",
+                });
+              }
+
               if (sql.includes("UPDATE mailbox_aliases") && state.mailbox) {
                 if (sql.includes("alias_local_part = ?")) {
                   state.mailbox.alias_local_part = values[0] as string;
@@ -1055,6 +1077,9 @@ function createEnv(): Env & {
     },
     get mailboxMessages() {
       return state.mailboxMessages;
+    },
+    get reminders() {
+      return state.reminders;
     },
     get telegramConnection() {
       return state.telegramConnection;
@@ -1655,6 +1680,49 @@ describe("ME3 Core Worker auth", () => {
     expect(JSON.parse(String(runtimeInit.body))).toMatchObject({
       userId: "owner",
       messageText: "Hello agent",
+    });
+  });
+
+  it("creates owner reminders through the agent chat package surface", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/agent/reminders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: session,
+        },
+        body: JSON.stringify({
+          title: "Follow up with Sam",
+          notes: "Ask about the proposal",
+          date: "2026-05-20",
+          time: "09:30",
+          timezone: "Europe/Dublin",
+          recurrence: "weekly",
+        }),
+      }),
+      env,
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      ok: true,
+      reminder: {
+        title: "Follow up with Sam",
+        notes: "Ask about the proposal",
+        timezone: "Europe/Dublin",
+        recurrenceRule: "weekly:wed",
+        status: "pending",
+      },
+    });
+    expect(env.reminders).toHaveLength(1);
+    expect(env.reminders[0]).toMatchObject({
+      user_id: "owner",
+      title: "Follow up with Sam",
+      recurrence_rule: "weekly:wed",
     });
   });
 

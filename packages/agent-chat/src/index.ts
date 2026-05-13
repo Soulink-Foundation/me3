@@ -1,3 +1,8 @@
+import {
+  getUtcMsForLocalTime,
+  normalizeTimeZone,
+} from "@me3-core/plugin-calendar";
+
 export const AGENT_CHAT_PLUGIN_ID = "me3.agent-chat";
 
 export const AGENT_CHAT_RUNTIME = {
@@ -47,6 +52,41 @@ export type AgentSandboxDispatchResponse = {
   contactsChanged?: boolean;
   error?: string;
 };
+
+export type AgentReminderInput = {
+  title?: unknown;
+  notes?: unknown;
+  date?: unknown;
+  time?: unknown;
+  timezone?: unknown;
+  recurrence?: unknown;
+};
+
+export type AgentReminder = {
+  id: string;
+  title: string;
+  notes: string | null;
+  remindAt: string;
+  timezone: string | null;
+  recurrenceRule: string | null;
+  contextType?: "contact" | "booking" | null;
+  contextId?: string | null;
+  contextLabel?: string | null;
+  status: "pending" | "delivered" | "dismissed" | "cancelled" | "failed";
+  deliveredAt?: string | null;
+  dismissedAt?: string | null;
+  createdAt?: string;
+};
+
+export type AgentReminderParseResult =
+  | {
+      title: string;
+      notes: string | null;
+      remindAt: string;
+      timezone: string;
+      recurrenceRule: string | null;
+    }
+  | { error: string };
 
 type CoreAgentChatEnv = {
   DB: D1Like;
@@ -115,6 +155,28 @@ type AiDefaultRow = {
   model: string;
 };
 
+type DbReminderRow = {
+  id: string;
+  title: string;
+  notes: string | null;
+  remind_at: string;
+  timezone: string | null;
+  recurrence_rule: string | null;
+  context_type?: "contact" | "booking" | null;
+  context_id?: string | null;
+  context_label?: string | null;
+  status: "pending" | "delivered" | "dismissed" | "cancelled" | "failed";
+  delivered_at?: string | null;
+  dismissed_at?: string | null;
+  created_at?: string;
+};
+
+type D1RunResultLike = {
+  meta?: {
+    changes?: number;
+  };
+};
+
 type AiProviderId = "workers-ai" | "openai" | "anthropic";
 
 type AiRoute = {
@@ -142,6 +204,150 @@ export function isAgentSandboxDispatchInput(
     typeof input.turnId === "string" &&
     typeof input.messageText === "string"
   );
+}
+
+export function parseAgentReminderInput(
+  input: AgentReminderInput | null | undefined,
+): AgentReminderParseResult {
+  const title = normalizeNullableText(input?.title);
+  const notes = normalizeNullableText(input?.notes);
+  const date = typeof input?.date === "string" ? input.date.trim() : "";
+  const time = typeof input?.time === "string" ? input.time.trim() : "";
+
+  if (!title) return { error: "Title is required" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { error: "Date must be in YYYY-MM-DD format" };
+  }
+  if (!/^\d{2}:\d{2}$/.test(time)) {
+    return { error: "Time must be in HH:MM format" };
+  }
+
+  const timezone = normalizeTimeZone(input?.timezone) || "UTC";
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  const remindAt = new Date(
+    getUtcMsForLocalTime({ year, month, day, hour, minute }, timezone),
+  ).toISOString();
+  const recurrenceRule = parseReminderRecurrenceRule(input?.recurrence, date);
+  if (hasExplicitReminderRecurrence(input?.recurrence) && !recurrenceRule) {
+    return { error: "Invalid recurrence value" };
+  }
+
+  return { title, notes, remindAt, timezone, recurrenceRule };
+}
+
+export async function createAgentReminder(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  input: AgentReminderInput,
+): Promise<AgentReminder | { error: string }> {
+  const parsed = parseAgentReminderInput(input);
+  if ("error" in parsed) return parsed;
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO user_reminders
+       (id, user_id, title, notes, remind_at, timezone, recurrence_rule, status, created_via)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'agent')`,
+  )
+    .bind(
+      id,
+      userId,
+      parsed.title,
+      parsed.notes,
+      parsed.remindAt,
+      parsed.timezone,
+      parsed.recurrenceRule,
+    )
+    .run();
+
+  return {
+    id,
+    title: parsed.title,
+    notes: parsed.notes,
+    remindAt: parsed.remindAt,
+    timezone: parsed.timezone,
+    recurrenceRule: parsed.recurrenceRule,
+    status: "pending",
+  };
+}
+
+export async function updateAgentReminder(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  reminderId: string,
+  input: AgentReminderInput,
+): Promise<AgentReminder | { error: string; status?: 400 | 404 }> {
+  const parsed = parseAgentReminderInput(input);
+  if ("error" in parsed) return { ...parsed, status: 400 };
+
+  const result = (await env.DB.prepare(
+    `UPDATE user_reminders
+     SET title = ?, notes = ?, remind_at = ?, timezone = ?, recurrence_rule = ?,
+         error_message = NULL, updated_at = datetime('now')
+     WHERE id = ? AND user_id = ? AND status IN ('pending', 'failed')`,
+  )
+    .bind(
+      parsed.title,
+      parsed.notes,
+      parsed.remindAt,
+      parsed.timezone,
+      parsed.recurrenceRule,
+      reminderId,
+      userId,
+    )
+    .run()) as D1RunResultLike;
+
+  if ((result.meta?.changes || 0) === 0) {
+    return { error: "Reminder not found", status: 404 };
+  }
+
+  return {
+    id: reminderId,
+    title: parsed.title,
+    notes: parsed.notes,
+    remindAt: parsed.remindAt,
+    timezone: parsed.timezone,
+    recurrenceRule: parsed.recurrenceRule,
+    status: "pending",
+  };
+}
+
+export async function cancelAgentReminder(
+  env: Pick<CoreAgentChatEnv, "DB">,
+  userId: string,
+  reminderId: string,
+): Promise<{ ok: true } | { error: string; status: 404 }> {
+  const result = (await env.DB.prepare(
+    `UPDATE user_reminders
+     SET status = 'cancelled', cancelled_at = datetime('now'), updated_at = datetime('now')
+     WHERE id = ? AND user_id = ? AND status IN ('pending', 'failed')`,
+  )
+    .bind(reminderId, userId)
+    .run()) as D1RunResultLike;
+
+  if ((result.meta?.changes || 0) === 0) {
+    return { error: "Reminder not found", status: 404 };
+  }
+  return { ok: true };
+}
+
+export function serializeAgentReminder(reminder: DbReminderRow): AgentReminder {
+  return {
+    id: reminder.id,
+    title: reminder.title,
+    notes: reminder.notes,
+    remindAt: reminder.remind_at,
+    timezone: reminder.timezone,
+    recurrenceRule: reminder.recurrence_rule,
+    contextType: reminder.context_type ?? null,
+    contextId: reminder.context_id ?? null,
+    contextLabel: reminder.context_label ?? null,
+    status: reminder.status,
+    deliveredAt: reminder.delivered_at ?? null,
+    dismissedAt: reminder.dismissed_at ?? null,
+    createdAt: reminder.created_at,
+  };
 }
 
 export async function createAgentSandboxTurnRecord(
@@ -224,6 +430,37 @@ export async function dispatchAgentSandboxTurn(
 
   await storage.put(resultKey, response);
   return response;
+}
+
+function parseReminderRecurrenceRule(recurrence: unknown, date: string): string | null {
+  const normalized =
+    typeof recurrence === "string" ? recurrence.trim().toLowerCase() : recurrence;
+  if (normalized == null || normalized === "" || normalized === "none") return null;
+  if (normalized === "daily") return "daily";
+
+  const [year, month, day] = date.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  const weekday =
+    ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][
+      new Date(Date.UTC(year, month - 1, day, 12, 0, 0)).getUTCDay()
+    ];
+
+  if (normalized === "weekly") return `weekly:${weekday}`;
+  if (normalized === "monthly") return `monthly:${day}`;
+  return null;
+}
+
+function hasExplicitReminderRecurrence(recurrence: unknown): boolean {
+  if (recurrence == null) return false;
+  if (typeof recurrence !== "string") return true;
+  const normalized = recurrence.trim().toLowerCase();
+  return normalized !== "" && normalized !== "none";
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized || null;
 }
 
 async function upsertSandboxConnection(

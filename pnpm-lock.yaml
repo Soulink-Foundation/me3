@@ -159,6 +159,10 @@ importers:
         version: 4.90.0(@cloudflare/workers-types@4.20260511.1)
 
   packages/agent-chat:
+    dependencies:
+      '@me3-core/plugin-calendar':
+        specifier: workspace:*
+        version: link:../calendar
     devDependencies:
       typescript:
         specifier: ^5.3.3

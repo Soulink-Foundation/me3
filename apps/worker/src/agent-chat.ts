@@ -1,10 +1,17 @@
 export {
   AGENT_CHAT_PLUGIN_ID,
   AGENT_CHAT_RUNTIME,
+  cancelAgentReminder,
   createAgentSandboxTurnRecord,
+  createAgentReminder,
   dispatchAgentSandboxTurn,
   isAgentSandboxDispatchInput,
+  parseAgentReminderInput,
+  serializeAgentReminder,
+  updateAgentReminder,
   type AgentSandboxDispatchInput,
   type AgentSandboxDispatchResponse,
   type AgentSandboxTurnRecord,
+  type AgentReminder,
+  type AgentReminderInput,
 } from "@me3-core/plugin-agent-chat";

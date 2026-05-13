@@ -10,6 +10,9 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@me3-core/plugin-calendar": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "^5.3.3"
   }

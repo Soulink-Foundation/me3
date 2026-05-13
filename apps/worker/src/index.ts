@@ -61,7 +61,14 @@ import {
   type LandingPageSection,
   type LandingPageTemplateId,
 } from "../../../shared/landing-pages";
-import { createAgentSandboxTurnRecord } from "./agent-chat";
+import {
+  cancelAgentReminder,
+  createAgentSandboxTurnRecord,
+  createAgentReminder,
+  serializeAgentReminder,
+  updateAgentReminder,
+  type AgentReminderInput,
+} from "./agent-chat";
 import { generateSiteHtml, type Me3SiteProfile } from "./site-generator";
 import type {
   DbAgentChannelConnection,
@@ -1706,7 +1713,7 @@ app.get("/api/calendar/feed", async (c) => {
 
   return c.json({
     bookings: bookings.results || [],
-    reminders: (reminders.results || []).map(serializeReminder),
+    reminders: (reminders.results || []).map(serializeAgentReminder),
     events: [
       ...(events.results || []),
       ...expandRecurringCalendarEvents(recurringEvents.results || [], window.start, window.end),
@@ -1840,92 +1847,38 @@ app.post("/api/agent/reminders", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
 
-  const parsed = await parseReminderBody(c);
-  if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+  const body = await c.req.json<AgentReminderInput>().catch((): AgentReminderInput => ({}));
+  const reminder = await createAgentReminder(c.env, ownerId, body);
+  if ("error" in reminder) return c.json({ error: reminder.error }, 400);
 
-  const id = crypto.randomUUID();
-  await c.env.DB.prepare(
-    `INSERT INTO user_reminders
-       (id, user_id, title, notes, remind_at, timezone, recurrence_rule, status, created_via)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'agent')`,
-  )
-    .bind(
-      id,
-      ownerId,
-      parsed.title,
-      parsed.notes,
-      parsed.remindAt,
-      parsed.timezone,
-      parsed.recurrenceRule,
-    )
-    .run();
-
-  return c.json({
-    ok: true,
-    reminder: {
-      id,
-      title: parsed.title,
-      notes: parsed.notes,
-      remindAt: parsed.remindAt,
-      timezone: parsed.timezone,
-      recurrenceRule: parsed.recurrenceRule,
-      status: "pending",
-    },
-  });
+  return c.json({ ok: true, reminder });
 });
 
 app.put("/api/agent/reminders/:reminderId", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
 
-  const parsed = await parseReminderBody(c);
-  if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+  const body = await c.req.json<AgentReminderInput>().catch((): AgentReminderInput => ({}));
+  const reminder = await updateAgentReminder(
+    c.env,
+    ownerId,
+    c.req.param("reminderId"),
+    body,
+  );
+  if ("error" in reminder) {
+    return c.json({ error: reminder.error }, (reminder.status || 400) as any);
+  }
 
-  const result = await c.env.DB.prepare(
-    `UPDATE user_reminders
-     SET title = ?, notes = ?, remind_at = ?, timezone = ?, recurrence_rule = ?,
-         error_message = NULL, updated_at = datetime('now')
-     WHERE id = ? AND user_id = ? AND status IN ('pending', 'failed')`,
-  )
-    .bind(
-      parsed.title,
-      parsed.notes,
-      parsed.remindAt,
-      parsed.timezone,
-      parsed.recurrenceRule,
-      c.req.param("reminderId"),
-      ownerId,
-    )
-    .run();
-  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Reminder not found" }, 404);
-
-  return c.json({
-    ok: true,
-    reminder: {
-      id: c.req.param("reminderId"),
-      title: parsed.title,
-      notes: parsed.notes,
-      remindAt: parsed.remindAt,
-      timezone: parsed.timezone,
-      recurrenceRule: parsed.recurrenceRule,
-      status: "pending",
-    },
-  });
+  return c.json({ ok: true, reminder });
 });
 
 app.put("/api/agent/reminders/:reminderId/cancel", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
 
-  const result = await c.env.DB.prepare(
-    `UPDATE user_reminders
-     SET status = 'cancelled', cancelled_at = datetime('now'), updated_at = datetime('now')
-     WHERE id = ? AND user_id = ? AND status IN ('pending', 'failed')`,
-  )
-    .bind(c.req.param("reminderId"), ownerId)
-    .run();
-  if ((result.meta?.changes || 0) === 0) return c.json({ error: "Reminder not found" }, 404);
-  return c.json({ ok: true });
+  const result = await cancelAgentReminder(c.env, ownerId, c.req.param("reminderId"));
+  if ("error" in result) return c.json({ error: result.error }, result.status as any);
+  return c.json(result);
 });
 
 app.get("/api/mailbox", async (c) => {
@@ -3590,94 +3543,6 @@ async function parseCalendarEventBody(c: AppContext): Promise<
     allDay,
     kind,
     recurrenceRule,
-  };
-}
-
-async function parseReminderBody(c: AppContext): Promise<
-  | {
-      title: string;
-      notes: string | null;
-      remindAt: string;
-      timezone: string;
-      recurrenceRule: string | null;
-    }
-  | { error: string }
-> {
-  const body = (await c.req.json().catch(() => null)) as {
-    title?: unknown;
-    notes?: unknown;
-    date?: unknown;
-    time?: unknown;
-    timezone?: unknown;
-    recurrence?: unknown;
-  } | null;
-  const title = normalizeNullableText(body?.title);
-  const notes = normalizeNullableText(body?.notes);
-  const date = typeof body?.date === "string" ? body.date.trim() : "";
-  const time = typeof body?.time === "string" ? body.time.trim() : "";
-
-  if (!title) return { error: "Title is required" };
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return { error: "Date must be in YYYY-MM-DD format" };
-  }
-  if (!/^\d{2}:\d{2}$/.test(time)) {
-    return { error: "Time must be in HH:MM format" };
-  }
-
-  const timezone = normalizeCalendarTimeZone(body?.timezone) || "UTC";
-  const [year, month, day] = date.split("-").map(Number);
-  const [hour, minute] = time.split(":").map(Number);
-  const remindAt = new Date(
-    getUtcMsForLocalTime({ year, month, day, hour, minute }, timezone),
-  ).toISOString();
-  const recurrenceRule = parseReminderRecurrenceRule(body?.recurrence, date);
-  if (hasExplicitReminderRecurrence(body?.recurrence) && !recurrenceRule) {
-    return { error: "Invalid recurrence value" };
-  }
-
-  return { title, notes, remindAt, timezone, recurrenceRule };
-}
-
-function parseReminderRecurrenceRule(recurrence: unknown, date: string): string | null {
-  const normalized =
-    typeof recurrence === "string" ? recurrence.trim().toLowerCase() : recurrence;
-  if (normalized == null || normalized === "" || normalized === "none") return null;
-  if (normalized === "daily") return "daily";
-
-  const [year, month, day] = date.split("-").map(Number);
-  if (!year || !month || !day) return null;
-  const weekday =
-    ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][
-      new Date(Date.UTC(year, month - 1, day, 12, 0, 0)).getUTCDay()
-    ];
-
-  if (normalized === "weekly") return `weekly:${weekday}`;
-  if (normalized === "monthly") return `monthly:${day}`;
-  return null;
-}
-
-function hasExplicitReminderRecurrence(recurrence: unknown): boolean {
-  if (recurrence == null) return false;
-  if (typeof recurrence !== "string") return true;
-  const normalized = recurrence.trim().toLowerCase();
-  return normalized !== "" && normalized !== "none";
-}
-
-function serializeReminder(reminder: DbUserReminder) {
-  return {
-    id: reminder.id,
-    title: reminder.title,
-    notes: reminder.notes,
-    remindAt: reminder.remind_at,
-    timezone: reminder.timezone,
-    recurrenceRule: reminder.recurrence_rule,
-    contextType: reminder.context_type,
-    contextId: reminder.context_id,
-    contextLabel: reminder.context_label,
-    status: reminder.status,
-    deliveredAt: reminder.delivered_at,
-    dismissedAt: reminder.dismissed_at,
-    createdAt: reminder.created_at,
   };
 }
 
