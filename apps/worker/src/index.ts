@@ -37,19 +37,10 @@ import {
   SocialPublishingInputError,
   appendContentItemMedia,
   completeSocialOAuth,
-  createContentItem,
-  deleteContentItem,
-  getContentStats,
   getSocialPublishingRuntimeStatus,
-  listContentItems,
   listSocialProviderSettings,
   listSocialPublishingAccounts,
-  markContentItemPublishing,
-  queueContentItem,
-  reorderContentQueue,
   startSocialOAuth,
-  unqueueContentItem,
-  updateContentItem,
   updateSocialProviderSettings,
 } from "./social-publishing";
 import {
@@ -65,12 +56,21 @@ import {
 import {
   cancelAgentReminder,
   convertAgentContactToClient,
+  createAgentContentItem,
   createAgentSandboxTurnRecord,
   createAgentContact,
   createAgentReminder,
+  deleteAgentContentItem,
   deleteAgentContact,
+  getAgentContentStats,
+  listAgentContentItems,
   listAgentContacts,
+  markAgentContentItemPublishing,
+  queueAgentContentItem,
+  reorderAgentContentQueue,
   serializeAgentReminder,
+  unqueueAgentContentItem,
+  updateAgentContentItem,
   updateAgentContact,
   updateAgentContactOutreachStatus,
   updateAgentReminder,
@@ -788,7 +788,7 @@ app.get("/api/content/items", async (c) => {
 
   try {
     return c.json({
-      items: await listContentItems(
+      items: await listAgentContentItems(
         c.env,
         ownerId,
         c.req.query("siteId"),
@@ -805,7 +805,7 @@ app.get("/api/content/stats", async (c) => {
   if (!ownerId) return unauthorized(c);
 
   try {
-    const stats = await getContentStats(c.env, ownerId, c.req.query("siteId"));
+    const stats = await getAgentContentStats(c.env, ownerId, c.req.query("siteId"));
     if (!stats) return c.json({ error: "Site not found" }, 404);
     return c.json({ stats });
   } catch (error) {
@@ -819,7 +819,7 @@ app.post("/api/content/items", async (c) => {
 
   const body = await c.req.json<unknown>().catch((): unknown => ({}));
   try {
-    return c.json({ ok: true, item: await createContentItem(c.env, ownerId, body as any) }, 201);
+    return c.json({ ok: true, item: await createAgentContentItem(c.env, ownerId, body as any) }, 201);
   } catch (error) {
     return socialPublishingErrorResponse(c, error);
   }
@@ -831,7 +831,7 @@ app.put("/api/content/items/:id", async (c) => {
 
   const body = await c.req.json<unknown>().catch((): unknown => ({}));
   try {
-    const item = await updateContentItem(c.env, ownerId, c.req.param("id"), body as any);
+    const item = await updateAgentContentItem(c.env, ownerId, c.req.param("id"), body as any);
     if (!item) return c.json({ error: "Content item not found" }, 404);
     return c.json({ ok: true, item });
   } catch (error) {
@@ -844,7 +844,7 @@ app.delete("/api/content/items/:id", async (c) => {
   if (!ownerId) return unauthorized(c);
 
   try {
-    const ok = await deleteContentItem(c.env, ownerId, c.req.param("id"));
+    const ok = await deleteAgentContentItem(c.env, ownerId, c.req.param("id"));
     if (!ok) return c.json({ error: "Content item not found" }, 404);
     return c.json({ ok: true });
   } catch (error) {
@@ -857,7 +857,7 @@ app.post("/api/content/items/:id/queue", async (c) => {
   if (!ownerId) return unauthorized(c);
 
   try {
-    const item = await queueContentItem(c.env, ownerId, c.req.param("id"));
+    const item = await queueAgentContentItem(c.env, ownerId, c.req.param("id"));
     if (!item) return c.json({ error: "Content item not found" }, 404);
     return c.json({ ok: true, item });
   } catch (error) {
@@ -870,7 +870,7 @@ app.post("/api/content/items/:id/unqueue", async (c) => {
   if (!ownerId) return unauthorized(c);
 
   try {
-    const item = await unqueueContentItem(c.env, ownerId, c.req.param("id"));
+    const item = await unqueueAgentContentItem(c.env, ownerId, c.req.param("id"));
     if (!item) return c.json({ error: "Content item not found" }, 404);
     return c.json({ ok: true, item });
   } catch (error) {
@@ -889,7 +889,7 @@ app.put("/api/content/queue/reorder", async (c) => {
   try {
     return c.json({
       ok: true,
-      items: await reorderContentQueue(c.env, ownerId, body.siteId, body.itemIds),
+      items: await reorderAgentContentQueue(c.env, ownerId, body.siteId, body.itemIds),
     });
   } catch (error) {
     return socialPublishingErrorResponse(c, error);
@@ -949,7 +949,7 @@ app.post("/api/content/items/:id/publish", async (c) => {
   if (!ownerId) return unauthorized(c);
 
   try {
-    const item = await markContentItemPublishing(c.env, ownerId, c.req.param("id"));
+    const item = await markAgentContentItemPublishing(c.env, ownerId, c.req.param("id"));
     if (!item) return c.json({ error: "Content item not found" }, 404);
     return c.json({ ok: true, item, publicationIds: [] });
   } catch (error) {

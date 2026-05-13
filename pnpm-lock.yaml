@@ -163,6 +163,9 @@ importers:
       '@me3-core/plugin-calendar':
         specifier: workspace:*
         version: link:../calendar
+      '@me3-core/plugin-social-publishing':
+        specifier: workspace:*
+        version: link:../social-publishing
     devDependencies:
       typescript:
         specifier: ^5.3.3
