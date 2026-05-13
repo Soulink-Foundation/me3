@@ -132,6 +132,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@me3-core/plugin-agent-chat':
+        specifier: workspace:*
+        version: link:../../packages/agent-chat
       '@me3-core/plugin-calendar':
         specifier: workspace:*
         version: link:../../packages/calendar
@@ -154,6 +157,12 @@ importers:
       wrangler:
         specifier: ^4.87.0
         version: 4.90.0(@cloudflare/workers-types@4.20260511.1)
+
+  packages/agent-chat:
+    devDependencies:
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
 
   packages/calendar:
     devDependencies:

@@ -27,7 +27,7 @@ type StoredMailboxMessage = DbMailboxMessage & {
 type StoredTelegramConnection = {
   id: string;
   user_id: string;
-  channel: "telegram";
+  channel: "telegram" | "sandbox";
   status: "pending" | "active" | "disconnected";
   setup_token: string;
   telegram_user_id: string | null;
@@ -41,6 +41,17 @@ type StoredTelegramConnection = {
   last_outbound_at: string | null;
   created_at: string;
   updated_at: string;
+};
+type StoredAgentChannelEvent = {
+  id: string;
+  connection_id: string;
+  channel: "telegram" | "sandbox";
+  direction: "inbound" | "outbound" | "system";
+  event_type: "start" | "message" | "link" | "send" | "error";
+  status: "received" | "pending" | "sent" | "failed" | "linked" | "skipped";
+  reply_to_message_id: string | null;
+  text_body: string | null;
+  raw_json: string | null;
 };
 
 type StoredSocialAccount = {
@@ -127,6 +138,8 @@ function createEnv(): Env & {
   emailSends: Array<Record<string, unknown>>;
   mailboxMessages: StoredMailboxMessage[];
   telegramConnection: StoredTelegramConnection | null;
+  sandboxConnection: StoredTelegramConnection | null;
+  agentEvents: StoredAgentChannelEvent[];
   socialAccounts: StoredSocialAccount[];
   socialProviderSettings: StoredSocialProviderSetting[];
   socialOauthStates: StoredSocialOauthState[];
@@ -146,6 +159,8 @@ function createEnv(): Env & {
     emailSends: [] as Array<Record<string, unknown>>,
     mailboxMessages: [] as StoredMailboxMessage[],
     telegramConnection: null as StoredTelegramConnection | null,
+    sandboxConnection: null as StoredTelegramConnection | null,
+    agentEvents: [] as StoredAgentChannelEvent[],
     socialAccounts: [] as StoredSocialAccount[],
     socialProviderSettings: [] as StoredSocialProviderSetting[],
     socialOauthStates: [] as StoredSocialOauthState[],
@@ -731,38 +746,69 @@ function createEnv(): Env & {
               }
 
               if (sql.includes("INSERT INTO agent_channel_connections")) {
-                state.telegramConnection = {
-                  id: (state.telegramConnection?.id || values[0]) as string,
+                const connection: StoredTelegramConnection = {
+                  id: sql.includes("'sandbox'")
+                    ? (values[0] as string)
+                    : ((state.telegramConnection?.id || values[0]) as string),
                   user_id: values[1] as string,
-                  channel: "telegram",
-                  status: "pending",
+                  channel: sql.includes("'sandbox'") ? "sandbox" : "telegram",
+                  status: sql.includes("'sandbox'") ? "active" : "pending",
                   setup_token: values[2] as string,
                   telegram_user_id: null,
                   telegram_chat_id: null,
                   telegram_username: null,
                   telegram_first_name: null,
                   telegram_last_name: null,
-                  connected_at: null,
+                  connected_at: sql.includes("'sandbox'")
+                    ? "2026-05-11T10:00:00Z"
+                    : null,
                   disconnected_at: null,
                   last_inbound_at: null,
                   last_outbound_at: null,
                   created_at: "2026-05-11T10:00:00Z",
                   updated_at: "2026-05-11T10:00:00Z",
                 };
+                if (connection.channel === "sandbox") {
+                  state.sandboxConnection = connection;
+                } else {
+                  state.telegramConnection = connection;
+                }
               }
 
               if (sql.includes("UPDATE agent_channel_connections") && state.telegramConnection) {
-                state.telegramConnection = {
-                  ...state.telegramConnection,
-                  status: "disconnected",
-                  telegram_user_id: null,
-                  telegram_chat_id: null,
-                  telegram_username: null,
-                  telegram_first_name: null,
-                  telegram_last_name: null,
-                  disconnected_at: "2026-05-11T10:05:00Z",
-                  updated_at: "2026-05-11T10:05:00Z",
-                };
+                if (sql.includes("status = 'active'") && state.sandboxConnection) {
+                  state.sandboxConnection = {
+                    ...state.sandboxConnection,
+                    status: "active",
+                    updated_at: "2026-05-11T10:05:00Z",
+                  };
+                } else {
+                  state.telegramConnection = {
+                    ...state.telegramConnection,
+                    status: "disconnected",
+                    telegram_user_id: null,
+                    telegram_chat_id: null,
+                    telegram_username: null,
+                    telegram_first_name: null,
+                    telegram_last_name: null,
+                    disconnected_at: "2026-05-11T10:05:00Z",
+                    updated_at: "2026-05-11T10:05:00Z",
+                  };
+                }
+              }
+
+              if (sql.includes("INSERT INTO agent_channel_events")) {
+                state.agentEvents.push({
+                  id: values[0] as string,
+                  connection_id: values[1] as string,
+                  channel: sql.includes("'sandbox'") ? "sandbox" : "telegram",
+                  direction: "inbound",
+                  event_type: "message",
+                  status: "received",
+                  reply_to_message_id: values[2] as string | null,
+                  text_body: values[3] as string | null,
+                  raw_json: values[4] as string | null,
+                });
               }
 
               return { success: true };
@@ -811,7 +857,14 @@ function createEnv(): Env & {
                 ) as T | null;
               }
               if (sql.includes("FROM agent_channel_connections")) {
-                return state.telegramConnection && values[0] === state.telegramConnection.user_id
+                if (sql.includes("channel = 'sandbox'")) {
+                  return state.sandboxConnection &&
+                    values[0] === state.sandboxConnection.user_id
+                    ? (state.sandboxConnection as T)
+                    : null;
+                }
+                return state.telegramConnection &&
+                  values[0] === state.telegramConnection.user_id
                   ? (state.telegramConnection as T)
                   : null;
               }
@@ -1004,6 +1057,12 @@ function createEnv(): Env & {
     },
     set telegramConnection(value: StoredTelegramConnection | null) {
       state.telegramConnection = value;
+    },
+    get sandboxConnection() {
+      return state.sandboxConnection;
+    },
+    get agentEvents() {
+      return state.agentEvents;
     },
     get socialAccounts() {
       return state.socialAccounts;
@@ -1503,6 +1562,67 @@ describe("ME3 Core Worker auth", () => {
 
     expect(response.status).toBe(200);
     expect(env.messages).toMatchObject([{ ownerId: "owner", content: "Hello" }]);
+  });
+
+  it("dispatches owner sandbox chat turns through the agent runtime", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+    const runtimeCalls: Array<[string, RequestInit]> = [];
+    const runtimeFetch = vi.fn(async (url: string, init?: RequestInit) => {
+      runtimeCalls.push([url, init || {}]);
+      return Response.json({
+        ok: true,
+        auditId: null,
+        turnId: "turn-1",
+        specialist: "core.agent-chat",
+        replyText: "Hello from Core chat.",
+        model: "test-model",
+        source: "fallback",
+        fallbackReason: null,
+        debugError: null,
+        emailAction: null,
+        reminderAction: null,
+        contentAction: null,
+        contactsChanged: false,
+      });
+    });
+
+    env.ME3_USER_AGENT = {
+      idFromName: vi.fn((name: string) => name),
+      get: vi.fn(() => ({ fetch: runtimeFetch })),
+    } as unknown as DurableObjectNamespace;
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/agent/sandbox", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: session,
+        },
+        body: JSON.stringify({ messageText: "Hello agent" }),
+      }),
+      env,
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({
+      ok: true,
+      specialist: "core.agent-chat",
+      replyText: "Hello from Core chat.",
+    });
+    expect(env.agentEvents).toHaveLength(1);
+    expect(env.agentEvents[0]).toMatchObject({
+      channel: "sandbox",
+      direction: "inbound",
+      text_body: "Hello agent",
+    });
+    expect(runtimeFetch).toHaveBeenCalledOnce();
+    const runtimeInit = runtimeCalls[0]?.[1] || {};
+    expect(JSON.parse(String(runtimeInit.body))).toMatchObject({
+      userId: "owner",
+      messageText: "Hello agent",
+    });
   });
 
   it("loads account settings for the signed-in owner", async () => {

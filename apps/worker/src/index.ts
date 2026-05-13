@@ -114,6 +114,7 @@ type OwnerAuthState = {
   me3Configured: boolean;
 };
 type ChatBody = { message?: string };
+type AgentSandboxBody = { messageText?: unknown; replyToMessageId?: unknown };
 type AccountUpdateBody = { timezone?: unknown; locale?: unknown };
 type MailboxUpdateBody = {
   aliasLocalPart?: unknown;
@@ -536,6 +537,73 @@ app.post("/api/assistant/chat", async (c) => {
     reply: "ME3 Core assistant shell is booted. Model execution will be wired in the first bootable slice.",
     setupRequired: await getSetupRequired(c.env, ownerId),
   });
+});
+
+app.post("/api/agent/sandbox", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const body = await c.req.json<AgentSandboxBody>().catch((): AgentSandboxBody => ({}));
+  const messageText = typeof body.messageText === "string" ? body.messageText.trim() : "";
+  if (!messageText) {
+    return c.json({ ok: false, error: "Message text is required" }, 400);
+  }
+
+  const runtime = c.env.ME3_USER_AGENT;
+  if (!runtime) {
+    return c.json(
+      { ok: false, error: "Agent chat runtime is not configured" },
+      503,
+    );
+  }
+
+  const replyToMessageId =
+    typeof body.replyToMessageId === "string" ||
+    typeof body.replyToMessageId === "number"
+      ? body.replyToMessageId
+      : null;
+  const connection = await upsertSandboxConnection(c.env, ownerId);
+  const turnId = crypto.randomUUID();
+  const sourceEvent = await insertSandboxEvent(c.env, {
+    connectionId: connection.id,
+    turnId,
+    messageText,
+    replyToMessageId,
+  });
+
+  const id = runtime.idFromName(ownerId);
+  const stub = runtime.get(id);
+  const response = await stub.fetch("https://me3-core-user-agent.internal/dispatch/sandbox", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      userId: ownerId,
+      connectionId: connection.id,
+      sourceEventId: sourceEvent.id,
+      turnId,
+      messageText,
+      replyToMessageId,
+    }),
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | Record<string, unknown>
+    | null;
+
+  if (!response.ok || payload?.ok !== true) {
+    return c.json(
+      {
+        ok: false,
+        error:
+          typeof payload?.error === "string"
+            ? payload.error
+            : `Agent chat runtime request failed (${response.status})`,
+      },
+      503,
+    );
+  }
+
+  return c.json(payload);
 });
 
 app.get("/api/account", async (c) => {
@@ -3328,6 +3396,71 @@ function renderLandingSection(section: LandingPageSection, username: string): st
     return `<section class="shell section"><div class="card"><h2>${escapeHtml(section.heading)}</h2><div class="grid">${section.items.map((item) => `<article><strong>${escapeHtml(item.question)}</strong><p>${escapeHtml(item.answer)}</p></article>`).join("")}</div></div></section>`;
   }
   return `<section class="shell section"><div class="card"><h2>${escapeHtml(section.heading)}</h2></div></section>`;
+}
+
+async function upsertSandboxConnection(
+  env: Env,
+  ownerId: string,
+): Promise<Pick<DbAgentChannelConnection, "id">> {
+  const existing = await env.DB.prepare(
+    `SELECT id
+     FROM agent_channel_connections
+     WHERE user_id = ? AND channel = 'sandbox'
+     LIMIT 1`,
+  )
+    .bind(ownerId)
+    .first<Pick<DbAgentChannelConnection, "id">>();
+
+  if (existing?.id) {
+    await env.DB.prepare(
+      `UPDATE agent_channel_connections
+       SET status = 'active', updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    )
+      .bind(existing.id)
+      .run();
+    return existing;
+  }
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO agent_channel_connections
+       (id, user_id, channel, status, setup_token, connected_at, created_at, updated_at)
+     VALUES (?, ?, 'sandbox', 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+  )
+    .bind(id, ownerId, crypto.randomUUID())
+    .run();
+
+  return { id };
+}
+
+async function insertSandboxEvent(
+  env: Env,
+  input: {
+    connectionId: string;
+    turnId: string;
+    messageText: string;
+    replyToMessageId: string | number | null;
+  },
+): Promise<Pick<DbAgentChannelEvent, "id">> {
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO agent_channel_events
+       (id, connection_id, channel, direction, event_type, status,
+        reply_to_message_id, text_body, raw_json, created_at, updated_at)
+     VALUES (?, ?, 'sandbox', 'inbound', 'message', 'received',
+        ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+  )
+    .bind(
+      id,
+      input.connectionId,
+      input.replyToMessageId === null ? null : String(input.replyToMessageId),
+      input.messageText,
+      JSON.stringify({ runtime: "sandbox", turnId: input.turnId }),
+    )
+    .run();
+
+  return { id };
 }
 
 async function requireOwner(c: AppContext): Promise<string | null> {

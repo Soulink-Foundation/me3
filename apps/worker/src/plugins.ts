@@ -1,4 +1,5 @@
 import type { Env } from "./types";
+import { AGENT_CHAT_RUNTIME } from "./agent-chat";
 import { CALENDAR_RUNTIME } from "./calendar";
 import { SOCIAL_PUBLISHING_RUNTIME } from "./social-publishing";
 
@@ -314,7 +315,81 @@ const CALENDAR_PLUGIN: CorePluginManifestSummary = {
   ],
 };
 
+const AGENT_CHAT_PLUGIN: CorePluginManifestSummary = {
+  schemaVersion: CORE_PLUGIN_CATALOG_VERSION,
+  id: "me3.agent-chat",
+  name: "ME3 Agent Chat",
+  version: "0.1.0",
+  description:
+    "First-party owner chat runtime for the ME3 assistant, exposed through the sandbox chat API and per-owner Durable Object.",
+  trustTier: "first_party",
+  distribution: "workspace_package",
+  installMode: "enabled_by_owner_config",
+  implementationStatus: AGENT_CHAT_RUNTIME.bundled ? "bundled" : "catalog_only",
+  capabilityIds: ["chat.core_reply"],
+  permissions: [
+    {
+      id: "agent.chat.reply",
+      label: "Respond to owner chat messages",
+    },
+  ],
+  routes: [
+    {
+      id: "agent.sandbox.api",
+      path: "/api/agent/sandbox",
+      methods: ["POST"],
+      auth: "owner",
+    },
+  ],
+  uiSlots: [
+    {
+      id: "agent.chat.launcher",
+      slot: "app.shell",
+      label: "Agent chat launcher",
+    },
+  ],
+  agentTools: [
+    {
+      id: "chat.core_reply",
+      label: "Core chat reply",
+      sideEffect: "none",
+      approvalMode: "none",
+    },
+  ],
+  secrets: [
+    {
+      name: "OPENAI_API_KEY",
+      label: "OpenAI API key",
+      required: false,
+    },
+    {
+      name: "ANTHROPIC_API_KEY",
+      label: "Anthropic API key",
+      required: false,
+    },
+  ],
+  migrations: [
+    {
+      id: "agent-chat.0001",
+      path: "./apps/worker/migrations/0001_core_bootstrap.sql",
+      destructive: false,
+    },
+    {
+      id: "agent-chat.0003",
+      path: "./apps/worker/migrations/0003_workspace_surfaces.sql",
+      destructive: false,
+    },
+  ],
+  queuesAndCrons: [],
+  notes: [
+    "Bundled through @me3-core/plugin-agent-chat as a first-party Core package.",
+    "Enabled by default because chat is the baseline ME3 Core experience, while plugin packaging keeps future tools portable.",
+    "Current runtime supports general chat through configured Core AI routes; richer tool actions should be added behind this package boundary.",
+  ],
+};
+
 export const CORE_PLUGIN_CATALOG: readonly CorePluginManifestSummary[] = [
+  AGENT_CHAT_PLUGIN,
   CALENDAR_PLUGIN,
   SOCIAL_PUBLISHING_PLUGIN,
 ];
