@@ -415,9 +415,7 @@ function createEnv(): Env & {
               }
 
               if (sql.includes("INSERT INTO install_secrets")) {
-                if (!state.installSecrets.has(values[0] as string)) {
-                  state.installSecrets.set(values[0] as string, values[1] as string);
-                }
+                state.installSecrets.set(values[0] as string, values[1] as string);
               }
 
               if (sql.includes("INSERT INTO ai_provider_credentials")) {
@@ -821,6 +819,12 @@ function createEnv(): Env & {
                     (message) => message.mailbox_id === mailboxId,
                   ).length,
                 } as T;
+              }
+
+              if (sql.includes("SELECT id, password_hash FROM owner_profile")) {
+                return state.owner
+                  ? ({ id: state.owner.id, password_hash: state.owner.password_hash } as T)
+                  : null;
               }
 
               if (sql.includes("SELECT password_hash FROM owner_profile")) {
@@ -1278,6 +1282,34 @@ describe("ME3 Core Worker auth", () => {
     });
   });
 
+  it("does not treat a placeholder owner row as configured auth", async () => {
+    const env = createEnv();
+    env.owner = {
+      id: "owner",
+      email: null,
+      name: null,
+      username: "owner",
+      bio: null,
+      avatar_url: null,
+      timezone: null,
+      locale: null,
+      password_hash: null,
+    };
+
+    const response = await app.fetch(new Request("http://localhost/api/config"), env);
+    const config = (await response.json()) as {
+      ownerAuthConfigured: boolean;
+      ownerPasswordAuthConfigured: boolean;
+      ownerMe3AuthConfigured: boolean;
+    };
+
+    expect(config).toMatchObject({
+      ownerAuthConfigured: false,
+      ownerPasswordAuthConfigured: false,
+      ownerMe3AuthConfigured: false,
+    });
+  });
+
   it("starts ME3 Cloud install claim for unclaimed installs", async () => {
     const env = createEnv();
     env.ME3_CLOUD_ORIGIN = "https://me3.example";
@@ -1350,6 +1382,7 @@ describe("ME3 Core Worker auth", () => {
       username: "owner",
       password_hash: null,
     });
+    expect(env.installSecrets.get("ME3_CLOUD_OWNER_ID")).toBe("user123");
     expect(env.me3ClaimStates).toHaveLength(0);
 
     fetchMock.mockRestore();

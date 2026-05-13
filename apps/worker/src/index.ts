@@ -192,6 +192,7 @@ const SESSION_COOKIE_NAME = "me3_core_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const PASSWORD_HASH_ALGORITHM = "pbkdf2_sha256";
 const PASSWORD_HASH_ITERATIONS = 100_000;
+const ME3_CLOUD_OWNER_SECRET_NAME = "ME3_CLOUD_OWNER_ID";
 const USERNAME_REGEX = /^[a-z0-9](?:[a-z0-9_-]{1,28}[a-z0-9])$/;
 const MAILBOX_ALIAS_REGEX = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 const MAILBOX_FOLDERS = new Set(["inbox", "drafts", "sent", "archive", "trash"]);
@@ -4571,12 +4572,13 @@ async function getOwnerAuthState(env: Env): Promise<OwnerAuthState> {
     .bind("owner")
     .first<{ id: string; password_hash: string | null }>();
   const passwordConfigured = Boolean(result?.password_hash);
-  const configured = Boolean(result?.id || passwordConfigured);
+  const me3Configured = Boolean(await getStoredMe3CloudOwnerId(env));
+  const configured = passwordConfigured || me3Configured;
 
   return {
     configured,
     passwordConfigured,
-    me3Configured: configured && !passwordConfigured,
+    me3Configured,
   };
 }
 
@@ -4659,6 +4661,30 @@ async function upsertMe3ClaimedOwner(
        updated_at = CURRENT_TIMESTAMP`,
   )
     .bind("owner", email, name, "owner", null, null, null, null)
+    .run();
+
+  await setStoredMe3CloudOwnerId(env, String(payload.sub));
+}
+
+async function getStoredMe3CloudOwnerId(env: Env): Promise<string | null> {
+  const result = await env.DB.prepare(
+    "SELECT value FROM install_secrets WHERE name = ?",
+  )
+    .bind(ME3_CLOUD_OWNER_SECRET_NAME)
+    .first<{ value: string }>();
+
+  return result?.value || null;
+}
+
+async function setStoredMe3CloudOwnerId(env: Env, ownerId: string): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO install_secrets (name, value, created_at, updated_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT(name) DO UPDATE SET
+       value = excluded.value,
+       updated_at = CURRENT_TIMESTAMP`,
+  )
+    .bind(ME3_CLOUD_OWNER_SECRET_NAME, ownerId)
     .run();
 }
 
