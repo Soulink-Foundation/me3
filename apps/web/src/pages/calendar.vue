@@ -271,6 +271,11 @@ const newEventForm = ref({
   timezone: defaultFormTimeZone,
   allDay: false,
   recurrence: "none",
+  customInterval: 1,
+  customUnit: "day" as "day" | "week" | "month" | "year",
+  customEnd: "never" as "never" | "on" | "after",
+  customUntilDate: "",
+  customCount: 30,
   location: "",
   notes: "",
 });
@@ -374,6 +379,16 @@ function formatEventRecurrence(rule: string | null | undefined): string {
     return `Monthly on day ${rule.slice("monthly:".length)}`;
   }
   if (rule === "yearly") return "Yearly";
+  const custom = parseCustomEventRecurrence(rule);
+  if (custom) {
+    const unit = custom.interval === 1 ? custom.unit : `${custom.unit}s`;
+    const suffix = custom.until
+      ? ` until ${custom.until}`
+      : custom.count
+        ? ` for ${custom.count} occurrences`
+        : "";
+    return `Every ${custom.interval} ${unit}${suffix}`;
+  }
   return rule || "";
 }
 
@@ -473,7 +488,65 @@ function recurrenceInputFromRule(rule: string | null | undefined): string {
   if (rule === "daily" || rule === "yearly") return rule;
   if (rule.startsWith("weekly:")) return "weekly";
   if (rule.startsWith("monthly:")) return "monthly";
+  if (parseCustomEventRecurrence(rule)) return "custom";
   return "none";
+}
+
+function parseCustomEventRecurrence(rule: string | null | undefined) {
+  if (!rule) return null;
+  const parts = rule.trim().toLowerCase().split(":");
+  if (parts[0] !== "custom") return null;
+  const interval = Number(parts[1]);
+  const unit = parts[2] as "day" | "week" | "month" | "year" | undefined;
+  if (!Number.isInteger(interval) || interval < 1 || interval > 99) return null;
+  if (unit !== "day" && unit !== "week" && unit !== "month" && unit !== "year") {
+    return null;
+  }
+  const parsed: {
+    interval: number;
+    unit: "day" | "week" | "month" | "year";
+    until?: string;
+    count?: number;
+  } = { interval, unit };
+  if (parts.length === 3) return parsed;
+  if (parts.length !== 5) return null;
+  if (parts[3] === "until" && /^\d{4}-\d{2}-\d{2}$/.test(parts[4])) {
+    parsed.until = parts[4];
+    return parsed;
+  }
+  if (parts[3] === "count") {
+    const count = Number(parts[4]);
+    if (Number.isInteger(count) && count >= 1 && count <= 999) {
+      parsed.count = count;
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function buildEventRecurrenceRule(): string {
+  const form = newEventForm.value;
+  if (form.recurrence !== "custom") return form.recurrence;
+  const interval = Math.max(1, Math.min(99, Math.round(Number(form.customInterval) || 1)));
+  const base = `custom:${interval}:${form.customUnit}`;
+  if (form.customEnd === "on" && form.customUntilDate) {
+    return `${base}:until:${form.customUntilDate}`;
+  }
+  if (form.customEnd === "after") {
+    const count = Math.max(1, Math.min(999, Math.round(Number(form.customCount) || 1)));
+    return `${base}:count:${count}`;
+  }
+  return base;
+}
+
+function applyCustomEventRecurrence(rule: string | null | undefined) {
+  const custom = parseCustomEventRecurrence(rule);
+  if (!custom) return;
+  newEventForm.value.customInterval = custom.interval;
+  newEventForm.value.customUnit = custom.unit;
+  newEventForm.value.customEnd = custom.until ? "on" : custom.count ? "after" : "never";
+  newEventForm.value.customUntilDate = custom.until || "";
+  newEventForm.value.customCount = custom.count || 30;
 }
 
 function preferredCreateDate(): string {
@@ -957,6 +1030,11 @@ function resetEventForm() {
     timezone: defaultFormTimeZone,
     allDay: false,
     recurrence: "none",
+    customInterval: 1,
+    customUnit: "day",
+    customEnd: "never",
+    customUntilDate: "",
+    customCount: 30,
     location: "",
     notes: "",
   };
@@ -1054,9 +1132,15 @@ function openEditEvent(eventId: string) {
     timezone: event.timezone || defaultFormTimeZone,
     allDay: event.allDay,
     recurrence: recurrenceInputFromRule(event.recurrenceRule),
+    customInterval: 1,
+    customUnit: "day",
+    customEnd: "never",
+    customUntilDate: "",
+    customCount: 30,
     location: event.location || "",
     notes: event.notes || "",
   };
+  applyCustomEventRecurrence(event.recurrenceRule);
   activeCreateMode.value = "event";
 }
 
@@ -1173,6 +1257,16 @@ async function submitNewEvent() {
     newEventError.value = "Title is required.";
     return;
   }
+  if (form.recurrence === "custom") {
+    if (form.customEnd === "on" && !form.customUntilDate) {
+      newEventError.value = "Choose an end date or set custom recurrence to never end.";
+      return;
+    }
+    if (form.customEnd === "after" && (!form.customCount || form.customCount < 1)) {
+      newEventError.value = "Custom recurrence needs at least one occurrence.";
+      return;
+    }
+  }
 
   newEventSubmitting.value = true;
   try {
@@ -1184,7 +1278,7 @@ async function submitNewEvent() {
       endTime: form.endTime,
       timezone: form.timezone,
       allDay: form.allDay,
-      recurrenceRule: form.recurrence,
+      recurrenceRule: buildEventRecurrenceRule(),
       location: form.location.trim() || undefined,
       notes: form.notes.trim() || undefined,
     };
@@ -1880,8 +1974,60 @@ onBeforeUnmount(() => {
               <option value="weekly">Weekly</option>
               <option value="monthly">Monthly</option>
               <option value="yearly">Yearly</option>
+              <option value="custom">Custom</option>
             </select>
           </label>
+
+          <div
+            v-if="newEventForm.recurrence === 'custom'"
+            class="custom-recurrence"
+          >
+            <div class="field-row">
+              <label>
+                <span>Repeat every</span>
+                <input
+                  v-model.number="newEventForm.customInterval"
+                  type="number"
+                  min="1"
+                  max="99"
+                  required
+                />
+              </label>
+              <label>
+                <span>Unit</span>
+                <select v-model="newEventForm.customUnit">
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="year">Year</option>
+                </select>
+              </label>
+            </div>
+
+            <label>
+              <span>Ends</span>
+              <select v-model="newEventForm.customEnd">
+                <option value="never">Never</option>
+                <option value="on">On date</option>
+                <option value="after">After occurrences</option>
+              </select>
+            </label>
+
+            <label v-if="newEventForm.customEnd === 'on'">
+              <span>End date</span>
+              <input v-model="newEventForm.customUntilDate" type="date" />
+            </label>
+
+            <label v-if="newEventForm.customEnd === 'after'">
+              <span>Occurrences</span>
+              <input
+                v-model.number="newEventForm.customCount"
+                type="number"
+                min="1"
+                max="999"
+              />
+            </label>
+          </div>
 
           <label>
             <span>Notes</span>

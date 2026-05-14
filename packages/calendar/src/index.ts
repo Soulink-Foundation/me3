@@ -5,7 +5,7 @@ export const CALENDAR_RUNTIME = {
   packageName: "@me3-core/plugin-calendar",
   bundled: true,
   runtimeStatus: "calendar_runtime",
-  recurrenceRules: ["daily", "weekly", "monthly", "yearly"],
+  recurrenceRules: ["daily", "weekly", "monthly", "yearly", "custom"],
   notes: [
     "Core bundles calendar recurrence and feed expansion through a first-party plugin package.",
     "The app calendar remains available as a default workspace surface while plugin install state catches up.",
@@ -23,6 +23,13 @@ export type CalendarEventLike = {
 };
 
 const WEEKDAY_TOKENS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+type CustomRecurrenceUnit = "day" | "week" | "month" | "year";
+type CustomRecurrenceRule = {
+  interval: number;
+  unit: CustomRecurrenceUnit;
+  until?: string;
+  count?: number;
+};
 
 export function normalizeTimeZone(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -91,6 +98,9 @@ export function normalizeEventRecurrenceRule(
     typeof value === "string" ? value.trim().toLowerCase() : null;
   if (!normalized || normalized === "none") return null;
   if (normalized === "daily" || normalized === "yearly") return normalized;
+  if (normalized.startsWith("custom:")) {
+    return parseCustomRecurrenceRule(normalized) ? normalized : null;
+  }
 
   const [year, month, day] = startDate.split("-").map(Number);
   if (!year || !month || !day) return null;
@@ -126,6 +136,16 @@ export function formatEventRecurrence(rule: string | null | undefined): string {
     return `Monthly on day ${rule.slice("monthly:".length)}`;
   }
   if (rule === "yearly") return "Yearly";
+  const custom = parseCustomRecurrenceRule(rule);
+  if (custom) {
+    const unit = custom.interval === 1 ? custom.unit : `${custom.unit}s`;
+    const suffix = custom.until
+      ? ` until ${custom.until}`
+      : custom.count
+        ? ` for ${custom.count} occurrences`
+        : "";
+    return `Every ${custom.interval} ${unit}${suffix}`;
+  }
   return rule || "";
 }
 
@@ -194,6 +214,59 @@ export function expandRecurringCalendarEvents<T extends CalendarEventLike>(
       continue;
     }
 
+    const custom = parseCustomRecurrenceRule(rule);
+    if (custom) {
+      let occurrenceIndex = 0;
+      const addCustomOccurrence = (year: number, month: number, day: number) => {
+        occurrenceIndex += 1;
+        if (custom.count && occurrenceIndex > custom.count) return;
+        if (custom.until && compareDateParts(year, month, day, custom.until) > 0) return;
+        addOccurrence(year, month, day);
+      };
+
+      if (custom.unit === "day") {
+        const cursor = new Date(originalStartMs);
+        for (let i = 0; i < 3700 && cursor.getTime() < endMs; i += custom.interval) {
+          const local = localDateParts(cursor.toISOString(), timezone);
+          addCustomOccurrence(local.year, local.month, local.day);
+          cursor.setUTCDate(cursor.getUTCDate() + custom.interval);
+        }
+        continue;
+      }
+
+      if (custom.unit === "week") {
+        const cursor = new Date(originalStartMs);
+        for (let i = 0; i < 1000 && cursor.getTime() < endMs; i += custom.interval) {
+          const local = localDateParts(cursor.toISOString(), timezone);
+          addCustomOccurrence(local.year, local.month, local.day);
+          cursor.setUTCDate(cursor.getUTCDate() + custom.interval * 7);
+        }
+        continue;
+      }
+
+      if (custom.unit === "month") {
+        for (let year = start.year, month = start.month, i = 0; i < 1200; i += 1) {
+          if (Date.UTC(year, month - 1, 1) > endMs) break;
+          const maxDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+          addCustomOccurrence(year, month, Math.min(start.day, maxDay));
+          month += custom.interval;
+          while (month > 12) {
+            year += 1;
+            month -= 12;
+          }
+        }
+        continue;
+      }
+
+      for (let year = start.year, i = 0; i < 200; i += 1) {
+        if (Date.UTC(year, start.month - 1, start.day) > endMs) break;
+        const maxDay = new Date(Date.UTC(year, start.month, 0)).getUTCDate();
+        addCustomOccurrence(year, start.month, Math.min(start.day, maxDay));
+        year += custom.interval;
+      }
+      continue;
+    }
+
     if (rule.startsWith("weekly:")) {
       const days = new Set(
         rule
@@ -256,4 +329,49 @@ function localDateParts(value: string, timezone: string) {
     hour: get("hour") === 24 ? 0 : get("hour"),
     minute: get("minute"),
   };
+}
+
+function parseCustomRecurrenceRule(
+  rule: string | null | undefined,
+): CustomRecurrenceRule | null {
+  if (!rule) return null;
+  const parts = rule.trim().toLowerCase().split(":");
+  if (parts[0] !== "custom") return null;
+  const interval = Number(parts[1]);
+  const unit = parts[2] as CustomRecurrenceUnit | undefined;
+  if (!Number.isInteger(interval) || interval < 1 || interval > 99) return null;
+  if (unit !== "day" && unit !== "week" && unit !== "month" && unit !== "year") {
+    return null;
+  }
+
+  const parsed: CustomRecurrenceRule = { interval, unit };
+  if (parts.length === 3) return parsed;
+  if (parts.length !== 5) return null;
+
+  if (parts[3] === "until" && /^\d{4}-\d{2}-\d{2}$/.test(parts[4])) {
+    parsed.until = parts[4];
+    return parsed;
+  }
+
+  if (parts[3] === "count") {
+    const count = Number(parts[4]);
+    if (Number.isInteger(count) && count >= 1 && count <= 999) {
+      parsed.count = count;
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function compareDateParts(
+  year: number,
+  month: number,
+  day: number,
+  date: string,
+): number {
+  const [untilYear, untilMonth, untilDay] = date.split("-").map(Number);
+  const left = Date.UTC(year, month - 1, day, 12, 0, 0);
+  const right = Date.UTC(untilYear, untilMonth - 1, untilDay, 12, 0, 0);
+  return left === right ? 0 : left > right ? 1 : -1;
 }

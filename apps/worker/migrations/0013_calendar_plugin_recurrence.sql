@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS user_calendar_events_next (
     recurrence_rule = 'daily' OR
     recurrence_rule = 'yearly' OR
     recurrence_rule LIKE 'weekly:%' OR
-    recurrence_rule LIKE 'monthly:%'
+    recurrence_rule LIKE 'monthly:%' OR
+    recurrence_rule LIKE 'custom:%'
   ),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
