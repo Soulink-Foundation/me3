@@ -1186,10 +1186,10 @@ export const useWizardStore = defineStore("wizard", () => {
   const testimonials = ref<WizardTestimonial[]>([]);
 
   // Optional step visibility
-  const newsletterEnabled = ref(true);
+  const newsletterEnabled = ref(false);
   const blogEnabled = ref(false);
-  const bookingsEnabled = ref(true);
-  const shopEnabled = ref(false);
+  const bookingsEnabled = ref(false);
+  const shopEnabled = ref(true);
   const testimonialsEnabled = ref(false);
   const blogTitle = ref<string>(DEFAULT_BLOG_TITLE);
   const shopTitle = ref<string>(DEFAULT_SHOP_TITLE);
@@ -1324,13 +1324,13 @@ export const useWizardStore = defineStore("wizard", () => {
   );
 
   watch(
-    [pages, blogEnabled, shopEnabled],
+    [pages, blogEnabled, shopEnabled, products],
     () => {
       const normalizedPlacement = normalizeTestimonialPlacement(
         testimonialsPlacement.value,
         {
           blogEnabled: blogEnabled.value,
-          shopEnabled: shopEnabled.value,
+          shopEnabled: shopEnabled.value && products.value.length > 0,
           pages: pages.value,
         },
       );
@@ -2946,7 +2946,7 @@ export const useWizardStore = defineStore("wizard", () => {
           testimonialsPlacement.value,
           {
             blogEnabled: blogEnabled.value,
-            shopEnabled: shopEnabled.value,
+            shopEnabled: shopEnabled.value && products.value.length > 0,
             pages: pages.value,
           },
         );
@@ -3285,11 +3285,8 @@ export const useWizardStore = defineStore("wizard", () => {
       }
     }
 
-    if (shopEnabled.value) {
-      const productCurrency =
-        products.value[0]?.currency ||
-        profile.value.booking.offers.find((offer) => offer.pricing?.enabled)
-          ?.pricing?.currency;
+    if (shopEnabled.value && products.value.length > 0) {
+      const productCurrency = products.value[0]?.currency;
       if (productCurrency) {
         intents.shop = {
           enabled: true,
@@ -3574,7 +3571,7 @@ export const useWizardStore = defineStore("wizard", () => {
         newsletterEnabled.value =
           typeof state.newsletterEnabled === "boolean"
             ? state.newsletterEnabled
-            : true;
+            : false;
         blogEnabled.value =
           typeof state.blogEnabled === "boolean"
             ? state.blogEnabled
@@ -3582,11 +3579,8 @@ export const useWizardStore = defineStore("wizard", () => {
         bookingsEnabled.value =
           typeof state.bookingsEnabled === "boolean"
             ? state.bookingsEnabled
-            : true;
-        shopEnabled.value =
-          typeof state.shopEnabled === "boolean"
-            ? state.shopEnabled
-            : (state.products || []).length > 0;
+            : false;
+        shopEnabled.value = true;
         testimonialsEnabled.value =
           typeof state.testimonialsEnabled === "boolean"
             ? state.testimonialsEnabled
@@ -3608,7 +3602,7 @@ export const useWizardStore = defineStore("wizard", () => {
           state.testimonialsPlacement,
           {
             blogEnabled: blogEnabled.value,
-            shopEnabled: shopEnabled.value,
+            shopEnabled: shopEnabled.value && products.value.length > 0,
             pages: pages.value,
           },
         );
@@ -3726,10 +3720,10 @@ export const useWizardStore = defineStore("wizard", () => {
     lastLocalEditAt.value = new Date().toISOString();
     lastSiteEditAt.value = lastLocalEditAt.value;
     draftSourceUrl.value = null;
-    newsletterEnabled.value = true;
+    newsletterEnabled.value = false;
     blogEnabled.value = false;
-    bookingsEnabled.value = true;
-    shopEnabled.value = false;
+    bookingsEnabled.value = false;
+    shopEnabled.value = true;
     testimonialsEnabled.value = false;
     blogTitle.value = DEFAULT_BLOG_TITLE;
     shopTitle.value = DEFAULT_SHOP_TITLE;
@@ -4262,8 +4256,7 @@ export const useWizardStore = defineStore("wizard", () => {
     newsletterEnabled.value = Boolean(siteProfile.intents?.subscribe?.enabled);
     blogEnabled.value = siteBlogPosts.length > 0;
     bookingsEnabled.value = Boolean(siteProfile.intents?.book?.enabled);
-    shopEnabled.value =
-      Boolean(siteProfile.intents?.shop?.enabled) || siteProducts.length > 0;
+    shopEnabled.value = true;
     testimonialsEnabled.value = (siteProfile.testimonials || []).length > 0;
     testimonialsPlacement.value = normalizeTestimonialPlacement(
       getStoredTestimonialPlacement(siteProfile as {
@@ -4272,7 +4265,7 @@ export const useWizardStore = defineStore("wizard", () => {
       }),
       {
         blogEnabled: blogEnabled.value,
-        shopEnabled: shopEnabled.value,
+        shopEnabled: shopEnabled.value && products.value.length > 0,
         pages: pages.value,
       },
     );

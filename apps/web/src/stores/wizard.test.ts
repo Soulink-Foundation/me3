@@ -692,6 +692,7 @@ describe("wizard store", () => {
       store.shopEnabled = true;
       store.testimonialsEnabled = true;
       store.testimonialsPlacement = "shop";
+      store.addProduct("Consulting");
       store.addTestimonial({
         name: "Jamie",
         quote: "An incredible experience.",
@@ -1423,10 +1424,10 @@ describe("wizard store", () => {
     it("should initialize with expected feature toggles", () => {
       const store = useWizardStore();
 
-      expect(store.newsletterEnabled).toBe(true);
+      expect(store.newsletterEnabled).toBe(false);
       expect(store.blogEnabled).toBe(false);
-      expect(store.bookingsEnabled).toBe(true);
-      expect(store.shopEnabled).toBe(false);
+      expect(store.bookingsEnabled).toBe(false);
+      expect(store.shopEnabled).toBe(true);
       expect(store.testimonialsEnabled).toBe(false);
     });
 
@@ -1488,6 +1489,16 @@ describe("wizard store", () => {
       expect(store.bookingsEnabled).toBe(true);
     });
 
+    it("should keep offerings enabled when loading old localStorage state", () => {
+      localStorage.setItem(
+        "me3_wizard_state",
+        JSON.stringify({ shopEnabled: false }),
+      );
+
+      const store = useWizardStore();
+      expect(store.shopEnabled).toBe(true);
+    });
+
     it("should load testimonialsEnabled from localStorage", () => {
       localStorage.setItem(
         "me3_wizard_state",
@@ -1521,10 +1532,10 @@ describe("wizard store", () => {
 
       store.reset();
 
-      expect(store.newsletterEnabled).toBe(true);
+      expect(store.newsletterEnabled).toBe(false);
       expect(store.blogEnabled).toBe(false);
-      expect(store.bookingsEnabled).toBe(true);
-      expect(store.shopEnabled).toBe(false);
+      expect(store.bookingsEnabled).toBe(false);
+      expect(store.shopEnabled).toBe(true);
       expect(store.testimonialsEnabled).toBe(false);
       expect(store.blogTitle).toBe("Blog");
       expect(store.shopTitle).toBe("Offerings");
@@ -1586,8 +1597,6 @@ describe("wizard store", () => {
         "Call-to-action",
         "Pages",
         "Additional Features",
-        "Newsletter",
-        "Bookings",
         "Offerings",
         "Publish",
       ]);

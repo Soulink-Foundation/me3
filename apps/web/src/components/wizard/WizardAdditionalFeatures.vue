@@ -40,20 +40,6 @@ const bookingsEnabled = computed({
   },
 });
 
-const shopEnabled = computed({
-  get: () => wizard.shopEnabled,
-  set: (val: boolean) => {
-    wizard.shopEnabled = val;
-  },
-});
-
-const shopTitle = computed({
-  get: () => wizard.shopTitle,
-  set: (val: string) => {
-    wizard.shopTitle = val;
-  },
-});
-
 const testimonialsEnabled = computed({
   get: () => wizard.testimonialsEnabled,
   set: (val: boolean) => {
@@ -66,16 +52,11 @@ const testimonialsEnabled = computed({
     wizard.testimonialsEnabled = val;
   },
 });
-
 </script>
 
 <template>
   <div class="step-additional-features">
     <h2>Enable additional features</h2>
-    <p class="section-desc">
-      Choose which extras you want to enable. Offerings is always part of the
-      wizard; this toggle controls product/resource pages.
-    </p>
 
     <div class="feature-cards">
       <!-- Newsletter -->
@@ -85,9 +66,7 @@ const testimonialsEnabled = computed({
             <UiIcon name="Mail" :size="18" />
           </span>
           <div class="feature-text">
-            <span class="feature-name">
-              Newsletter
-            </span>
+            <span class="feature-name"> Newsletter </span>
             <span class="feature-desc">
               Collect subscribers so people can stay in touch and hear about new
               updates.
@@ -107,9 +86,7 @@ const testimonialsEnabled = computed({
             <UiIcon name="Calendar" :size="18" />
           </span>
           <div class="feature-text">
-            <span class="feature-name">
-              Bookings
-            </span>
+            <span class="feature-name"> Bookings </span>
             <span class="feature-desc">
               Let people book time with you and keep availability in sync with
               your calendar.
@@ -156,42 +133,6 @@ const testimonialsEnabled = computed({
         </label>
       </div>
 
-      <!-- Offerings -->
-      <div class="feature-card">
-        <div class="feature-card-main">
-          <span class="feature-icon" aria-hidden="true">
-            <UiIcon name="ShoppingCart" :size="18" />
-          </span>
-          <div class="feature-text">
-            <span class="feature-name">
-              Products
-            </span>
-            <span class="feature-desc">
-              Add products or resources to your site. Payment collection belongs
-              in a later plugin layer.
-            </span>
-            <div v-if="shopEnabled" class="feature-field">
-              <label class="feature-field-label" for="shop-menu-title">
-                Main menu title
-              </label>
-              <input
-                id="shop-menu-title"
-                v-model="shopTitle"
-                type="text"
-                class="feature-field-input"
-                placeholder="Offerings"
-                maxlength="40"
-              />
-              <p class="feature-field-hint">URL path: /{{ wizard.shopPath }}</p>
-            </div>
-          </div>
-        </div>
-        <label class="feature-toggle">
-          <input type="checkbox" v-model="shopEnabled" />
-          <span class="feature-toggle-ui" />
-        </label>
-      </div>
-
       <!-- Testimonials -->
       <div class="feature-card">
         <div class="feature-card-main">
@@ -212,7 +153,6 @@ const testimonialsEnabled = computed({
         </label>
       </div>
     </div>
-
   </div>
 </template>
 

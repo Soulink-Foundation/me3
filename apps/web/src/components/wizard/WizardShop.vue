@@ -198,6 +198,13 @@ const canSendConfirmationTest = computed(
 
 const canAddMore = computed(() => wizard.products.length < 20);
 
+const shopTitle = computed({
+  get: () => wizard.shopTitle,
+  set: (val: string) => {
+    wizard.shopTitle = val;
+  },
+});
+
 function buildPositioningStatement(
   audience: string,
   primaryProblem: string,
@@ -853,6 +860,22 @@ defineExpose({
 <template>
   <div class="step-shop">
     <h2>Offerings</h2>
+
+    <div v-if="!isEditingProduct" class="shop-menu-title">
+      <label class="shop-menu-title-label" for="shop-menu-title-input">
+        Main menu title
+      </label>
+      <input
+        id="shop-menu-title-input"
+        v-model="shopTitle"
+        type="text"
+        class="shop-menu-title-input"
+        placeholder="Offerings"
+        maxlength="40"
+      />
+      <p class="shop-menu-title-hint">URL path: /{{ wizard.shopPath }}</p>
+    </div>
+
     <section v-if="!isEditingProduct" class="business-positioning-card">
       <div class="business-positioning-header">
         <div>
@@ -1041,13 +1064,6 @@ defineExpose({
     </section>
 
     <!-- Product list -->
-    <p
-      v-if="!wizard.shopEnabled && wizard.products.length === 0"
-      class="empty-hint"
-    >
-      Products are turned off. Enable <strong>Products</strong> in Additional
-      Features when you are ready to add resources or offerings.
-    </p>
     <div
       v-if="wizard.products.length > 0 && selectedProductIndex === null"
       class="product-list"
@@ -1091,7 +1107,7 @@ defineExpose({
     </div>
 
     <div
-      v-if="wizard.shopEnabled && selectedProductIndex === null && canAddMore"
+      v-if="selectedProductIndex === null && canAddMore"
       class="add-products"
     >
       <button class="add-btn" type="button" @click="addNewProduct">
@@ -1292,8 +1308,7 @@ defineExpose({
     <p
       v-if="
         wizard.products.length === 0 &&
-        selectedProductIndex === null &&
-        wizard.shopEnabled
+        selectedProductIndex === null
       "
       class="empty-hint"
     >
@@ -1310,6 +1325,41 @@ defineExpose({
 .step-shop h2 {
   font-size: 28px;
   margin-bottom: 8px;
+}
+
+.shop-menu-title {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 320px;
+  margin-bottom: 20px;
+}
+
+.shop-menu-title-label {
+  color: var(--ui-text-muted, var(--color-text-muted));
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.shop-menu-title-input {
+  width: 100%;
+  border: 2px solid var(--ui-border, var(--color-border));
+  border-radius: 10px;
+  background: var(--ui-bg, var(--color-bg));
+  color: var(--ui-text, var(--color-text));
+  font: inherit;
+  padding: 10px 12px;
+}
+
+.shop-menu-title-input:focus {
+  outline: 2px solid var(--ui-accent, var(--color-primary));
+  outline-offset: 1px;
+}
+
+.shop-menu-title-hint {
+  margin: 0;
+  color: var(--ui-text-muted, var(--color-text-muted));
+  font-size: 13px;
 }
 
 .step-desc {

@@ -62,7 +62,7 @@ const placementOptions = computed(() => {
     },
   ];
 
-  if (wizard.shopEnabled) {
+  if (wizard.shopEnabled && wizard.products.length > 0) {
     options.push({
       value: "shop",
       label: `${wizard.shopTitle} page (/${wizard.shopPath})`,
