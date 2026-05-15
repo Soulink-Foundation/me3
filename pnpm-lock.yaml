@@ -138,6 +138,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@me3-core/knowledge':
+        specifier: workspace:*
+        version: link:../../packages/knowledge
       '@me3-core/plugin-agent-chat':
         specifier: workspace:*
         version: link:../../packages/agent-chat
@@ -172,6 +175,9 @@ importers:
 
   packages/agent-chat:
     dependencies:
+      '@me3-core/knowledge':
+        specifier: workspace:*
+        version: link:../knowledge
       '@me3-core/plugin-calendar':
         specifier: workspace:*
         version: link:../calendar
@@ -184,6 +190,12 @@ importers:
         version: 5.9.3
 
   packages/calendar:
+    devDependencies:
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
+
+  packages/knowledge:
     devDependencies:
       typescript:
         specifier: ^5.3.3

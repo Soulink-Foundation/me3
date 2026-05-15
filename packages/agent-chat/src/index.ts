@@ -2,6 +2,10 @@ import {
   getUtcMsForLocalTime,
   normalizeTimeZone,
 } from "@me3-core/plugin-calendar";
+import {
+  buildMe3CapabilityContext,
+  type Me3KnowledgeRuntimeContext,
+} from "@me3-core/knowledge";
 
 export {
   createAgentContentItem,
@@ -299,6 +303,12 @@ type AiCredentialRow = {
 type AiDefaultRow = {
   provider_id: string;
   model: string;
+};
+
+type DbPluginInstallationRow = {
+  plugin_id: string;
+  enabled: number;
+  status: string;
 };
 
 type DbReminderRow = {
@@ -1344,7 +1354,13 @@ export async function dispatchAgentSandboxTurn(
   const owner = await getOwnerProfile(env, input.userId);
   const route = await resolveAiRoute(env, input.userId);
   const recent = await loadRecentMessages(env, input.userId);
-  const messages = buildChatMessages(owner, recent, input.messageText);
+  const knowledgeContext = await loadMe3KnowledgeRuntimeContext(env, route.configured);
+  const messages = buildChatMessages(
+    owner,
+    recent,
+    input.messageText,
+    knowledgeContext,
+  );
 
   let response: AgentSandboxDispatchResponse;
   if (!route.configured) {
@@ -2320,6 +2336,7 @@ function buildChatMessages(
   owner: OwnerProfileRow | null,
   recent: Array<{ role: "user" | "assistant"; content: string }>,
   messageText: string,
+  knowledgeContext: string,
 ): Array<{ role: "system" | "user" | "assistant"; content: string }> {
   const ownerName = owner?.name?.trim() || owner?.username?.trim() || "the owner";
   const system = [
@@ -2327,6 +2344,7 @@ function buildChatMessages(
     `The owner is ${ownerName}.`,
     owner?.bio ? `Owner profile context: ${owner.bio}` : null,
     owner?.timezone ? `Owner timezone: ${owner.timezone}` : null,
+    knowledgeContext,
     "Answer helpfully and plainly. Do not claim external actions are complete unless a tool result says they are.",
     "This first Core chat slice can converse and reason, but richer plugin tools are still being wired in.",
   ]
@@ -2338,6 +2356,42 @@ function buildChatMessages(
     ...recent,
     { role: "user", content: messageText },
   ];
+}
+
+async function loadMe3KnowledgeRuntimeContext(
+  env: CoreAgentChatEnv,
+  aiRouteConfigured: boolean,
+): Promise<string> {
+  const context: Me3KnowledgeRuntimeContext = {
+    surface: "core",
+    chatRuntime: "conversation_only",
+    configuredFeatureIds: aiRouteConfigured ? ["ai.chat_provider"] : [],
+    missingFeatureIds: aiRouteConfigured ? [] : ["ai.chat_provider"],
+  };
+
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT plugin_id, enabled, status
+       FROM plugin_installations
+       ORDER BY plugin_id`,
+    ).bind().all<DbPluginInstallationRow>();
+    const installations = rows.results || [];
+    context.installedPluginIds = installations.map((row) => row.plugin_id);
+    context.enabledPluginIds = installations
+      .filter((row) => row.enabled !== 0 && row.status === "installed")
+      .map((row) => row.plugin_id);
+    context.setupRequiredPluginIds = installations
+      .filter((row) => row.enabled !== 0 && row.status === "setup_required")
+      .map((row) => row.plugin_id);
+    context.disabledPluginIds = installations
+      .filter((row) => row.enabled === 0 || row.status === "disabled")
+      .map((row) => row.plugin_id);
+  } catch {
+    // Knowledge context should improve answers, not break chat when plugin state
+    // has not been migrated yet.
+  }
+
+  return buildMe3CapabilityContext(context);
 }
 
 async function persistAssistantMessage(

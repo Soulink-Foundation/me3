@@ -1,5 +1,5 @@
 {
-  "name": "@me3-core/plugin-agent-chat",
+  "name": "@me3-core/knowledge",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,11 +9,6 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@me3-core/knowledge": "workspace:*",
-    "@me3-core/plugin-calendar": "workspace:*",
-    "@me3-core/plugin-social-publishing": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.3.3"

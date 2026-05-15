@@ -2294,6 +2294,61 @@ describe("ME3 Core Worker auth", () => {
     expect(response.status).toBe(401);
   });
 
+  it("exposes shared ME3 knowledge with runtime setup state", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/knowledge", {
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const body = (await response.json()) as {
+      schemaVersion: string;
+      catalogVersion: string;
+      facts: Array<{ id: string }>;
+      capabilities: Array<{ id: string; runtimeState: string; runtimeNote: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.schemaVersion).toMatch(/^\d{4}-\d{2}-\d{2}\.v\d+$/);
+    expect(body.catalogVersion).toMatch(/^\d{4}-\d{2}-\d{2}\.v\d+$/);
+    expect(body.facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "me3.boundary.public_private" }),
+      ]),
+    );
+    expect(body.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "workspace.mission_control",
+          runtimeState: "available",
+        }),
+        expect.objectContaining({
+          id: "calendar.events_reminders",
+          runtimeState: "available",
+        }),
+        expect.objectContaining({
+          id: "content.social_publishing",
+          runtimeState: "setup_required",
+        }),
+        expect.objectContaining({
+          id: "ai.chat_provider",
+          runtimeState: "setup_required",
+        }),
+      ]),
+    );
+  });
+
+  it("requires owner auth for ME3 knowledge access", async () => {
+    const env = createEnv();
+
+    const response = await app.fetch(new Request("http://localhost/api/knowledge"), env);
+
+    expect(response.status).toBe(401);
+  });
+
   it("activates bundled Social Publishing when Core prerequisites are configured", async () => {
     const env = createEnv();
     const session = cookieHeader(await bootstrap(env));

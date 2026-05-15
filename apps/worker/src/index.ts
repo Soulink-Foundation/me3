@@ -31,6 +31,7 @@ import {
   deactivateCorePlugin,
   isCorePluginEnabled,
   listCorePluginRecords,
+  type CorePluginRecord,
 } from "./plugins";
 import {
   MissionControlInputError,
@@ -88,6 +89,10 @@ import {
   renderLandingPageHtml,
   type LandingPageDocument,
 } from "@me3-core/plugin-landing-pages";
+import {
+  getMe3KnowledgeSnapshot,
+  type Me3KnowledgeRuntimeContext,
+} from "@me3-core/knowledge";
 import {
   activateAgentMailbox,
   cancelAgentReminder,
@@ -658,6 +663,24 @@ app.get("/api/plugins", async (c) => {
   return c.json({
     catalogVersion: CORE_PLUGIN_CATALOG_VERSION,
     plugins: await listCorePluginRecords(c.env),
+  });
+});
+
+app.get("/api/knowledge", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  const [plugins, aiConfigured] = await Promise.all([
+    listCorePluginRecords(c.env),
+    hasConfiguredAiProvider(c.env, ownerId),
+  ]);
+  const snapshot = getMe3KnowledgeSnapshot(
+    buildKnowledgeRuntimeContext(plugins, aiConfigured),
+  );
+
+  return c.json({
+    ...snapshot,
+    catalogVersion: CORE_PLUGIN_CATALOG_VERSION,
   });
 });
 
@@ -4773,6 +4796,30 @@ async function getSetupRequired(env: Env, ownerId = "owner"): Promise<string[]> 
   }
 
   return missing;
+}
+
+function buildKnowledgeRuntimeContext(
+  plugins: CorePluginRecord[],
+  aiConfigured: boolean,
+): Me3KnowledgeRuntimeContext {
+  return {
+    surface: "core",
+    chatRuntime: "conversation_only",
+    installedPluginIds: plugins
+      .filter((plugin) => plugin.installed)
+      .map((plugin) => plugin.id),
+    enabledPluginIds: plugins
+      .filter((plugin) => plugin.enabled && plugin.status === "installed")
+      .map((plugin) => plugin.id),
+    setupRequiredPluginIds: plugins
+      .filter((plugin) => plugin.status === "setup_required")
+      .map((plugin) => plugin.id),
+    disabledPluginIds: plugins
+      .filter((plugin) => plugin.status === "disabled")
+      .map((plugin) => plugin.id),
+    configuredFeatureIds: aiConfigured ? ["ai.chat_provider"] : [],
+    missingFeatureIds: aiConfigured ? [] : ["ai.chat_provider"],
+  };
 }
 
 function getEnvironment(env: Env): string {
