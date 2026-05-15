@@ -8,6 +8,32 @@ Fastest path: use the deploy button, sign in to Cloudflare, let Cloudflare fork 
 
 This repository is intentionally small at first. It is not a raw split of `me3-app`; it is the curated first slice that will become a bootable Cloudflare install template.
 
+## Why ME3 Exists
+
+Everyone should have access to a capable personal AI, not just large companies, technical teams, or people with the time to stitch together their own tools. ME3 is being built so an individual, practitioner, or small business can have an assistant that knows their public identity, respects their private context, and helps them act with more clarity.
+
+ME3 is the assistant, identity layer, public site, and action surface for a person or business. It gives the owner a portable `me.json`, a private workspace, optional provider connections, and a growing set of plugins that can help with real work rather than just conversation.
+
+ME3 is not a surveillance system, a replacement for human judgment, or a black box that pretends the user no longer needs to know who they are or what they offer. The assistant should amplify the owner's agency, not take it away.
+
+Core principles:
+
+- **Human agency first**: ME3 should help the owner think, decide, and act. It should not manufacture urgency, hide uncertainty, or take consequential action without clear permission.
+- **Portable by default**: the owner should be able to run Core, export their data, publish a public identity, and move between self-hosted and managed paths without losing themselves in the system.
+- **Public and private stay separate**: `me.json` is the public authority-before-action manifest. Private memory, provider secrets, task history, approvals, and local context belong inside Core and its plugins.
+- **Explicit consent for action**: sending, publishing, paying, booking, editing local files, or running code should move through visible permissions and audit trails.
+- **Useful defaults, open extension points**: Core should boot with a small understandable assistant, then grow through first-party and eventually third-party plugins.
+
+On day one, Core should make it possible to install ME3, claim or create the owner account, publish a basic public profile, configure providers, and start using the private workspace. The first releases are intentionally modest so the trust model can grow cleanly.
+
+Plugins are how ME3 gains new abilities without turning Core into a tangle of optional features. A good plugin declares what it adds, what data it needs, what routes and UI it contributes, what secrets or bindings are required, and which actions require approval.
+
+Mission Control is expected to become the default base plugin for making the assistant visible. It should show projects, tasks, capture, approvals, private memory, run history, plugin activity, context sources, and optional local-daemon status in one place.
+
+Privacy and security are product features, not paperwork. ME3 should make it easy to see what the assistant knows, what it can access, what it has done, and what is waiting for approval.
+
+The roadmap points toward a personal/business AI operating layer: local files and repos when explicitly connected, private memory that compounds, safer action execution, richer public protocols, and a managed ME3 Cloud path for people who do not want to run the infrastructure themselves.
+
 ## First Slice
 
 - Cloudflare Worker shell with health, owner setup, assistant chat placeholder, and public profile/me.json endpoints.
