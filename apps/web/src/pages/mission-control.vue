@@ -68,6 +68,8 @@ type MissionTask = {
   projectId: string | null;
   dueAt: string | null;
   scheduledFor: string | null;
+  sourceKind: "manual" | "capture" | "agent" | "beads" | "daemon";
+  sourceRef: string | null;
   priority: number;
 };
 
@@ -222,6 +224,9 @@ const captureType = ref<MissionCaptureType>("task");
 const manualCaptureType = ref(false);
 const selectedProjectId = ref("");
 const savingCapture = ref(false);
+const schedulePickerOpen = ref(false);
+const scheduleDate = ref("");
+const scheduleTime = ref("");
 const journalDraft = ref("");
 const journalState = ref<"idle" | "saving" | "saved" | "error">("idle");
 const memoryDraft = ref("");
@@ -248,6 +253,17 @@ const openCaptures = computed(() =>
 );
 const doneCaptures = computed(() =>
   captures.value.filter((capture) => capture.status === "done"),
+);
+const visibleScheduledTasks = computed(() =>
+  tasksDueToday.value.filter((task) => task.sourceKind !== "capture"),
+);
+const openItemCount = computed(() => openCaptures.value.length + visibleScheduledTasks.value.length);
+const showCaptureList = computed(
+  () =>
+    loading.value ||
+    openCaptures.value.length > 0 ||
+    doneCaptures.value.length > 0 ||
+    visibleScheduledTasks.value.length > 0,
 );
 const journalStatusText = computed(() => {
   if (journalState.value === "saving") return "Saving";
@@ -351,6 +367,7 @@ async function submitCapture() {
   if (!text || savingCapture.value) return;
   savingCapture.value = true;
   error.value = "";
+  const hasPickedSchedule = captureType.value !== "task" && scheduleDate.value && scheduleTime.value;
   try {
     const response = await api.post<{ capture: MissionCapture }>(
       "/mission-control/capture",
@@ -359,12 +376,17 @@ async function submitCapture() {
         text,
         type: captureType.value,
         projectId: selectedProjectId.value || undefined,
+        scheduledDate: hasPickedSchedule ? scheduleDate.value : undefined,
+        scheduledTime: hasPickedSchedule ? scheduleTime.value : undefined,
+        timezone: hasPickedSchedule ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined,
       },
     );
-    captures.value = [response.capture, ...captures.value];
     captureText.value = "";
     manualCaptureType.value = false;
     captureType.value = "task";
+    schedulePickerOpen.value = false;
+    scheduleDate.value = "";
+    scheduleTime.value = "";
     notice.value = `${captureTypeLabel(response.capture.type)} captured`;
     await loadOverview();
   } catch (e) {
@@ -394,6 +416,15 @@ async function archiveCapture(capture: MissionCapture) {
     captures.value = captures.value.filter((item) => item.id !== capture.id);
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : "Could not archive capture";
+  }
+}
+
+async function archiveTask(task: MissionTask) {
+  try {
+    await api.delete(`/mission-control/tasks/${encodeURIComponent(task.id)}`);
+    tasksDueToday.value = tasksDueToday.value.filter((item) => item.id !== task.id);
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : "Could not remove task";
   }
 }
 
@@ -521,6 +552,12 @@ function moveDay(delta: number) {
 function chooseType(type: MissionCaptureType) {
   captureType.value = type;
   manualCaptureType.value = true;
+  if (type === "task") {
+    schedulePickerOpen.value = false;
+    return;
+  }
+  scheduleDate.value ||= selectedDate.value;
+  schedulePickerOpen.value = true;
 }
 
 async function addMemory() {
@@ -654,6 +691,7 @@ watch(captureText, (text) => {
   if (!text.trim()) {
     manualCaptureType.value = false;
     captureType.value = "task";
+    schedulePickerOpen.value = false;
     return;
   }
   if (!manualCaptureType.value) {
@@ -661,7 +699,10 @@ watch(captureText, (text) => {
   }
 });
 
-watch(selectedDate, () => {
+watch(selectedDate, (nextDate, previousDate) => {
+  if (!scheduleDate.value || scheduleDate.value === previousDate) {
+    scheduleDate.value = nextDate;
+  }
   void loadOverview();
 });
 
@@ -795,18 +836,33 @@ onBeforeUnmount(() => {
           </button>
         </form>
 
-        <section class="capture-list" aria-label="Today list">
+        <div
+          v-if="schedulePickerOpen && captureType !== 'task'"
+          class="schedule-picker"
+          aria-label="Schedule picker"
+        >
+          <label>
+            <span>Date</span>
+            <input v-model="scheduleDate" type="date" />
+          </label>
+          <label>
+            <span>Time</span>
+            <input v-model="scheduleTime" type="time" />
+          </label>
+          <button type="button" class="text-button" @click="schedulePickerOpen = false">
+            Done
+          </button>
+        </div>
+
+        <section v-if="showCaptureList" class="capture-list" aria-label="Today list">
           <div class="capture-list__header">
             <div>
               <h1>{{ selectedDateLabel }}</h1>
             </div>
-            <span>{{ openCaptures.length }} open</span>
+            <span>{{ openItemCount }} open</span>
           </div>
 
           <div v-if="loading" class="empty-row">Loading...</div>
-          <div v-else-if="openCaptures.length === 0 && tasksDueToday.length === 0" class="empty-row">
-            Clear for {{ selectedDateLabel.toLowerCase() }}.
-          </div>
 
           <article
             v-for="capture in openCaptures"
@@ -848,7 +904,7 @@ onBeforeUnmount(() => {
           </article>
 
           <article
-            v-for="task in tasksDueToday"
+            v-for="task in visibleScheduledTasks"
             :key="task.id"
             class="capture-item capture-item--scheduled"
           >
@@ -863,6 +919,14 @@ onBeforeUnmount(() => {
                 <span>{{ formatShortDate(task.dueAt || task.scheduledFor) }}</span>
               </div>
             </div>
+            <button
+              type="button"
+              class="icon-button quiet"
+              aria-label="Archive scheduled task"
+              @click="archiveTask(task)"
+            >
+              <UiIcon name="X" :size="16" />
+            </button>
           </article>
 
           <template v-if="doneCaptures.length">
@@ -1373,6 +1437,33 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
+.schedule-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.schedule-picker label {
+  display: grid;
+  gap: 4px;
+  color: var(--ui-text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.schedule-picker input {
+  min-height: 36px;
+  min-width: 140px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font: inherit;
+  padding: 0 10px;
+}
+
 .capture-list,
 .simple-sheet,
 .journal-sheet {
@@ -1781,12 +1872,35 @@ onBeforeUnmount(() => {
   }
 
   .capture-row {
-    grid-template-columns: minmax(0, 1fr) 40px;
+    grid-template-columns: auto minmax(0, 1fr) 40px;
   }
 
-  .capture-row__type,
-  .capture-row__project {
+  .capture-row__input {
     grid-column: 1 / -1;
+  }
+
+  .capture-row__project {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .capture-row__type {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .capture-row__submit {
+    grid-column: 3;
+    grid-row: 2;
+  }
+
+  .schedule-picker {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+
+  .schedule-picker input {
+    min-width: 0;
   }
 
   .detail-row,

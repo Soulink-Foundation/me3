@@ -248,6 +248,9 @@ type CaptureCreateInput = {
   text?: unknown;
   type?: unknown;
   projectId?: unknown;
+  scheduledDate?: unknown;
+  scheduledTime?: unknown;
+  timezone?: unknown;
   source?: unknown;
 };
 
@@ -374,7 +377,11 @@ export async function createMissionCapture(
   await ensureProjectExists(env, userId, projectId);
 
   const ownerTimezone = await getOwnerTimezone(env, userId);
-  const temporal = parseTemporalHint(text, date, ownerTimezone);
+  const manualTimezone =
+    typeof input.timezone === "string" ? normalizeTimeZone(input.timezone) : null;
+  const temporal =
+    parseManualTemporalHint(input.scheduledDate, input.scheduledTime, manualTimezone || ownerTimezone) ||
+    parseTemporalHint(text, date, ownerTimezone);
   const day = await getOrCreateMissionDay(env, userId, date);
   const captureId = crypto.randomUUID();
   let taskId: string | null = null;
@@ -506,6 +513,11 @@ export async function updateMissionCapture(
 }
 
 export async function archiveMissionCapture(env: Env, userId: string, captureId: string) {
+  const existing = await getMissionCapture(env, userId, captureId);
+  if (!existing) {
+    throw new MissionControlInputError("Capture not found", 404);
+  }
+
   const result = await env.DB.prepare(
     `UPDATE mission_capture_items
      SET status = 'archived', updated_at = datetime('now')
@@ -516,6 +528,33 @@ export async function archiveMissionCapture(env: Env, userId: string, captureId:
   if ((result.meta?.changes || 0) === 0) {
     throw new MissionControlInputError("Capture not found", 404);
   }
+
+  if (existing.task_id) {
+    await env.DB.prepare(
+      `UPDATE mission_tasks
+       SET status = 'cancelled', archived_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind(existing.task_id, userId)
+      .run();
+  }
+
+  if (existing.reminder_id) {
+    await env.DB.prepare(
+      `UPDATE user_reminders
+       SET status = 'cancelled'
+       WHERE id = ? AND user_id = ?`,
+    )
+      .bind(existing.reminder_id, userId)
+      .run();
+  }
+
+  if (existing.calendar_event_id) {
+    await env.DB.prepare("DELETE FROM user_calendar_events WHERE id = ? AND user_id = ?")
+      .bind(existing.calendar_event_id, userId)
+      .run();
+  }
+
   return { ok: true };
 }
 
@@ -1605,7 +1644,26 @@ function serializeDaemonAuditEvent(row: MissionDaemonAuditRow) {
 function parseTemporalHint(text: string, selectedDate: string, timezone: string): TemporalHint | null {
   const date = resolveMentionedDate(text, selectedDate);
   const time = resolveMentionedTime(text);
-  if (!time) return null;
+  if (!time && !date.explicit) return null;
+  return buildTemporalHint(date.value, time || { hour: 9, minute: 0 }, timezone);
+}
+
+function parseManualTemporalHint(
+  dateInput: unknown,
+  timeInput: unknown,
+  timezone: string,
+): TemporalHint | null {
+  const date = normalizeMissionDateKey(dateInput);
+  const time = normalizeClockInput(timeInput);
+  if (!date || !time) return null;
+  return buildTemporalHint(date, time, timezone);
+}
+
+function buildTemporalHint(
+  date: string,
+  time: { hour: number; minute: number },
+  timezone: string,
+): TemporalHint {
   const [year, month, day] = date.split("-").map(Number);
   const startsAt = new Date(
     getUtcMsForLocalTime(
@@ -1623,11 +1681,14 @@ function parseTemporalHint(text: string, selectedDate: string, timezone: string)
   return { startsAt, endsAt, timezone };
 }
 
-function resolveMentionedDate(text: string, selectedDate: string): string {
+function resolveMentionedDate(text: string, selectedDate: string): { value: string; explicit: boolean } {
   const normalized = text.toLowerCase();
-  if (normalized.includes("tomorrow")) return addDays(selectedDate, 1);
+  if (normalized.includes("tomorrow")) return { value: addDays(selectedDate, 1), explicit: true };
+  if (normalized.includes("today")) return { value: selectedDate, explicit: true };
   const isoDate = normalized.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-  if (isoDate?.[1] && normalizeMissionDateKey(isoDate[1])) return isoDate[1];
+  if (isoDate?.[1] && normalizeMissionDateKey(isoDate[1])) {
+    return { value: isoDate[1], explicit: true };
+  }
   const monthDate = normalized.match(
     /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+(\d{1,2})\b/,
   );
@@ -1637,10 +1698,10 @@ function resolveMentionedDate(text: string, selectedDate: string): string {
     if (month !== null && day >= 1 && day <= 31) {
       const year = Number(selectedDate.slice(0, 4));
       const candidate = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-      return normalizeMissionDateKey(candidate) || selectedDate;
+      return { value: normalizeMissionDateKey(candidate) || selectedDate, explicit: true };
     }
   }
-  return selectedDate;
+  return { value: selectedDate, explicit: false };
 }
 
 function resolveMentionedTime(text: string): { hour: number; minute: number } | null {
@@ -1658,6 +1719,17 @@ function resolveMentionedTime(text: string): { hour: number; minute: number } | 
   if (meridiem === "pm" && hour < 12) hour += 12;
   if (meridiem === "am" && hour === 12) hour = 0;
   if (hour < 0 || hour > 23) return null;
+  return { hour, minute };
+}
+
+function normalizeClockInput(value: unknown): { hour: number; minute: number } | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
   return { hour, minute };
 }
 
