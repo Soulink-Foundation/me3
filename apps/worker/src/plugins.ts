@@ -4,13 +4,14 @@ import { CALENDAR_RUNTIME } from "./calendar";
 import { LANDING_PAGES_RUNTIME } from "@me3-core/plugin-landing-pages";
 import { SOCIAL_PUBLISHING_RUNTIME } from "./social-publishing";
 
-export const CORE_PLUGIN_CATALOG_VERSION = "2026-05-14.v1";
+export const CORE_PLUGIN_CATALOG_VERSION = "2026-05-15.v1";
 
 export type CorePluginStatus =
   | "available"
   | "installed"
   | "setup_required"
-  | "disabled";
+  | "disabled"
+  | "coming_soon";
 
 export type CorePluginSetupRequirement = {
   id: string;
@@ -31,6 +32,8 @@ export type CorePluginManifestSummary = {
   distribution: "workspace_package" | "npm_package" | "remote_bundle";
   installMode: "enabled_by_owner_config";
   defaultEnabled?: boolean;
+  releaseStage?: "available" | "coming_soon";
+  activationAllowed?: boolean;
   implementationStatus: "catalog_only" | "bundled";
   capabilityIds: string[];
   permissions: { id: string; label: string }[];
@@ -401,6 +404,9 @@ const LANDING_PAGES_PLUGIN: CorePluginManifestSummary = {
   trustTier: "first_party",
   distribution: "workspace_package",
   installMode: "enabled_by_owner_config",
+  defaultEnabled: false,
+  releaseStage: "coming_soon",
+  activationAllowed: false,
   implementationStatus: LANDING_PAGES_RUNTIME.bundled ? "bundled" : "catalog_only",
   capabilityIds: ["sites.landing_pages", "agent.landing_page_generation"],
   permissions: [
@@ -476,6 +482,12 @@ export async function activateCorePlugin(
   pluginId: string,
 ): Promise<CorePluginRecord> {
   const plugin = getCorePluginManifest(pluginId);
+  if (!isPluginActivationAllowed(plugin)) {
+    throw new PluginInstallInputError(
+      `${plugin.name} is coming soon and cannot be activated yet`,
+      400,
+    );
+  }
   const now = new Date().toISOString();
   const setupRequirements = getSetupRequirements(env, plugin, {
     plugin_id: plugin.id,
@@ -615,25 +627,32 @@ function serializePluginRecord(
   installation: DbPluginInstallation | null,
 ): CorePluginRecord {
   const setupRequirements = getSetupRequirements(env, plugin, installation);
+  const activationAllowed = isPluginActivationAllowed(plugin);
   const defaultInstalled = !installation && plugin.defaultEnabled === true;
   const installed = Boolean(installation) || defaultInstalled;
   const enabled =
+    activationAllowed &&
     installed &&
     (defaultInstalled || installation?.enabled !== 0) &&
     installation?.status !== "disabled";
   const setupBlocked = setupRequirements.some(
     (requirement) => requirement.required && !requirement.configured,
   );
-  const status: CorePluginStatus = !installed
-    ? "available"
-    : !enabled
-      ? "disabled"
-      : setupBlocked || installation?.status === "setup_required"
-        ? "setup_required"
-        : "installed";
+  let status: CorePluginStatus = "installed";
+  if (!activationAllowed) {
+    status = "coming_soon";
+  } else if (!installed) {
+    status = "available";
+  } else if (!enabled) {
+    status = "disabled";
+  } else if (setupBlocked || installation?.status === "setup_required") {
+    status = "setup_required";
+  }
 
   return {
     ...plugin,
+    releaseStage: plugin.releaseStage || "available",
+    activationAllowed,
     status,
     statusLabel: statusToLabel(status),
     installed,
@@ -647,6 +666,10 @@ function serializePluginRecord(
     installedAt: installation?.installed_at || null,
     updatedAt: installation?.updated_at || null,
   };
+}
+
+function isPluginActivationAllowed(plugin: CorePluginManifestSummary): boolean {
+  return plugin.activationAllowed !== false && plugin.releaseStage !== "coming_soon";
 }
 
 function getSetupRequirements(
@@ -719,6 +742,8 @@ function statusToLabel(status: CorePluginStatus): string {
       return "Setup required";
     case "disabled":
       return "Disabled";
+    case "coming_soon":
+      return "Coming soon";
     default:
       return "Available";
   }

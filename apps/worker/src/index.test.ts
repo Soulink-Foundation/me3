@@ -2150,6 +2150,8 @@ describe("ME3 Core Worker auth", () => {
         installed: boolean;
         enabled: boolean;
         implementationStatus: string;
+        releaseStage: string;
+        activationAllowed: boolean;
         agentTools: Array<{ id: string; approvalMode: string }>;
         setupRequirements: Array<{ kind: string; configured: boolean; required: boolean }>;
       }>;
@@ -2173,6 +2175,14 @@ describe("ME3 Core Worker auth", () => {
           id: "me3.social-publishing",
           status: "available",
           implementationStatus: "bundled",
+        }),
+        expect.objectContaining({
+          id: "me3.landing-pages",
+          status: "coming_soon",
+          implementationStatus: "bundled",
+          releaseStage: "coming_soon",
+          activationAllowed: false,
+          enabled: false,
         }),
       ]),
     );
@@ -2877,6 +2887,48 @@ describe("ME3 Core Worker auth", () => {
     );
 
     expect(response.status).toBe(404);
+  });
+
+  it("rejects activation for coming-soon plugins", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/plugins/me3.landing-pages/activate", {
+        method: "POST",
+        headers: { Cookie: session },
+      }),
+      env,
+    );
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain("coming soon");
+  });
+
+  it("rejects landing-page site creation while the plugin is coming soon", async () => {
+    const env = createEnv();
+    const session = cookieHeader(await bootstrap(env));
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/sites", {
+        method: "POST",
+        headers: {
+          Cookie: session,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: "owner-event",
+          siteType: "landing_page",
+          templateId: "event",
+        }),
+      }),
+      env,
+    );
+    const body = (await response.json()) as { error: string };
+
+    expect(response.status).toBe(403);
+    expect(body.error).toContain("coming soon");
   });
 
   it("loads AI provider settings for the signed-in owner", async () => {

@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { definePage } from "unplugin-vue-router/runtime";
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 import {
   useSitesStore,
   type DomainStatus,
 } from "../../stores/sites";
-import { LANDING_PAGE_TEMPLATES } from "@me3-core/plugin-landing-pages";
+import {
+  LANDING_PAGES_PLUGIN_ID,
+  LANDING_PAGE_TEMPLATES,
+} from "@me3-core/plugin-landing-pages";
+import { api } from "../../api";
 import { useWizardStore } from "../../stores/wizard";
 import NewsletterSubscribers from "../../components/NewsletterSubscribers.vue";
 import UiIcon from "../../components/UiIcon.vue";
@@ -54,11 +58,18 @@ const site = computed(() =>
 const siteType = computed(() => site.value?.site_type || "profile");
 const isLandingPage = computed(() => siteType.value === "landing_page");
 const isProfileSite = computed(() => siteType.value === "profile");
+const landingPagesFeatureEnabled = ref(false);
 const newLandingPageRoute = computed(
   () => `/sites/${username.value}/landing-pages/new`,
 );
 const landingPageSites = computed(() =>
   sites.sites.filter((entry) => (entry.site_type || "profile") === "landing_page"),
+);
+const showLandingPageTools = computed(
+  () => isProfileSite.value && landingPagesFeatureEnabled.value,
+);
+const showLandingPageControls = computed(
+  () => isLandingPage.value && landingPagesFeatureEnabled.value,
 );
 
 // Use local preview URL in development
@@ -92,6 +103,25 @@ const faviconLoading = ref(false);
 const faviconUrl = ref<string | null>(null);
 const faviconFileInput = ref<HTMLInputElement | null>(null);
 const faviconImageErrored = ref(false);
+
+async function syncLandingPagesFeature() {
+  try {
+    const response = await api.get<{
+      plugins: Array<{ id: string; enabled: boolean; status: string }>;
+    }>("/plugins");
+    const plugin = response.plugins.find(
+      (candidate) => candidate.id === LANDING_PAGES_PLUGIN_ID,
+    );
+    landingPagesFeatureEnabled.value =
+      plugin?.enabled === true && plugin.status === "installed";
+  } catch {
+    landingPagesFeatureEnabled.value = false;
+  }
+}
+
+function handlePluginsChanged() {
+  void syncLandingPagesFeature();
+}
 
 async function syncHeaderDomainStatus() {
   const u = username.value;
@@ -200,6 +230,9 @@ onMounted(async () => {
     await sites.fetchSites();
   }
 
+  await syncLandingPagesFeature();
+  window.addEventListener("me3:plugins-changed", handlePluginsChanged);
+
   if (!site.value) {
     router.push("/calendar");
     return;
@@ -210,6 +243,10 @@ onMounted(async () => {
     showAdvancedUpload.value = true;
   }
 
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("me3:plugins-changed", handlePluginsChanged);
 });
 
 async function loadWizardContent(): Promise<void> {
@@ -823,7 +860,7 @@ Note: Opening index.html directly (file://) won't work due to browser security.
         </div>
       </div>
 
-      <nav v-if="isProfileSite" class="site-tabs" aria-label="Site tools">
+      <nav v-if="showLandingPageTools" class="site-tabs" aria-label="Site tools">
         <span class="site-tab active">ME3 site</span>
         <a class="site-tab" href="#landing-pages">Landing pages</a>
         <router-link class="site-tab" :to="newLandingPageRoute">
@@ -859,7 +896,7 @@ Note: Opening index.html directly (file://) won't work due to browser security.
           </button>
 
           <router-link
-            v-if="isProfileSite"
+            v-if="showLandingPageTools"
             class="action-card"
             :to="newLandingPageRoute"
           >
@@ -873,7 +910,7 @@ Note: Opening index.html directly (file://) won't work due to browser security.
           </router-link>
 
           <button
-            v-if="isLandingPage"
+            v-if="showLandingPageControls"
             class="action-card primary"
             @click="openBuilder"
           >
@@ -887,7 +924,7 @@ Note: Opening index.html directly (file://) won't work due to browser security.
           </button>
 
           <button
-            v-if="isLandingPage && !site?.published_at"
+            v-if="showLandingPageControls && !site?.published_at"
             class="action-card"
             @click="publishLandingPage"
           >
@@ -901,7 +938,7 @@ Note: Opening index.html directly (file://) won't work due to browser security.
           </button>
 
           <button
-            v-if="isLandingPage && site?.published_at"
+            v-if="showLandingPageControls && site?.published_at"
             class="action-card"
             @click="unpublishLandingPage"
           >
@@ -934,7 +971,7 @@ Note: Opening index.html directly (file://) won't work due to browser security.
       </section>
 
       <section
-        v-if="isProfileSite"
+        v-if="showLandingPageTools"
         id="landing-pages"
         class="landing-pages-section"
       >

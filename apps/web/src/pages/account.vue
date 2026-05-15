@@ -104,7 +104,12 @@ type MailboxResponse = {
   recentActivity: MailboxActivity[];
 };
 
-type PluginStatus = "available" | "installed" | "setup_required" | "disabled";
+type PluginStatus =
+  | "available"
+  | "installed"
+  | "setup_required"
+  | "disabled"
+  | "coming_soon";
 
 type PluginSetupRequirement = {
   id: string;
@@ -123,6 +128,8 @@ type PluginRecord = {
   trustTier: "first_party" | "third_party";
   distribution: "workspace_package" | "npm_package" | "remote_bundle";
   implementationStatus: "catalog_only" | "bundled";
+  releaseStage: "available" | "coming_soon";
+  activationAllowed: boolean;
   status: PluginStatus;
   statusLabel: string;
   installed: boolean;
@@ -503,7 +510,10 @@ const pluginSummaryLabel = computed(() => {
     return `${setupRequired} needs setup`;
   }
   const enabled = plugins.value.filter((plugin) => plugin.enabled).length;
+  const comingSoon = plugins.value.filter(isPluginComingSoon).length;
+  if (enabled > 0 && comingSoon > 0) return `${enabled} on, ${comingSoon} soon`;
   if (enabled > 0) return `${enabled} on`;
+  if (comingSoon > 0) return `${comingSoon} soon`;
   return `${plugins.value.length} off`;
 });
 
@@ -513,6 +523,9 @@ const pluginSummaryStatusClass = computed(() => {
   }
   if (plugins.value.some((plugin) => plugin.status === "installed")) {
     return "active";
+  }
+  if (plugins.value.some(isPluginComingSoon)) {
+    return "coming_soon";
   }
   return "available";
 });
@@ -803,6 +816,9 @@ function pluginActionKey(plugin: PluginRecord, action: "activate" | "deactivate"
 }
 
 function pluginInfoText(plugin: PluginRecord) {
+  if (isPluginComingSoon(plugin)) {
+    return `${plugin.description} This plugin is hidden for launch and will be available in a later release.`;
+  }
   if (plugin.id === "me3.social-publishing") {
     return "Adds social account connection and approval-first publishing.";
   }
@@ -810,10 +826,30 @@ function pluginInfoText(plugin: PluginRecord) {
 }
 
 function pluginStatusLabel(plugin: PluginRecord) {
+  if (isPluginComingSoon(plugin)) return "Coming soon";
   if (plugin.status === "installed") return "On";
   if (plugin.status === "setup_required") return "Needs setup";
   if (plugin.status === "disabled") return "Off";
   return "Off";
+}
+
+function isPluginComingSoon(plugin: PluginRecord) {
+  return (
+    plugin.status === "coming_soon" ||
+    plugin.releaseStage === "coming_soon" ||
+    plugin.activationAllowed === false
+  );
+}
+
+function canActivatePlugin(plugin: PluginRecord) {
+  return (
+    !isPluginComingSoon(plugin) &&
+    (plugin.status === "available" || plugin.status === "disabled")
+  );
+}
+
+function canDeactivatePlugin(plugin: PluginRecord) {
+  return !isPluginComingSoon(plugin) && !canActivatePlugin(plugin);
 }
 
 function visiblePluginSetupRequirements(plugin: PluginRecord) {
@@ -2023,7 +2059,15 @@ onMounted(async () => {
                         {{ pluginStatusLabel(plugin) }}
                       </span>
                       <button
-                        v-if="plugin.status === 'available' || plugin.status === 'disabled'"
+                        v-if="isPluginComingSoon(plugin)"
+                        type="button"
+                        class="button secondary plugin-action-button"
+                        disabled
+                      >
+                        Coming soon
+                      </button>
+                      <button
+                        v-else-if="canActivatePlugin(plugin)"
                         type="button"
                         class="button primary plugin-action-button"
                         :disabled="pluginActionLoading !== null"
@@ -2036,7 +2080,7 @@ onMounted(async () => {
                         }}
                       </button>
                       <button
-                        v-else
+                        v-else-if="canDeactivatePlugin(plugin)"
                         type="button"
                         class="button secondary plugin-action-button"
                         :disabled="pluginActionLoading !== null"
@@ -2767,6 +2811,11 @@ h1 {
 .status-badge.pending_approval {
   background: rgba(255, 179, 0, 0.16);
   color: #9a6700;
+}
+
+.status-badge.coming_soon {
+  background: rgba(90, 101, 116, 0.14);
+  color: var(--color-text-muted);
 }
 
 .status-badge.paused,

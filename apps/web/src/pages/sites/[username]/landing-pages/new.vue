@@ -13,6 +13,7 @@ import UiIcon from "../../../../components/UiIcon.vue";
 definePage({
   meta: {
     requiresAuth: true,
+    requiresPlugin: "me3.landing-pages",
     title: "Add Landing Page | ME3",
     description: "Create a landing page draft inside Sites.",
     robots: "noindex,follow",

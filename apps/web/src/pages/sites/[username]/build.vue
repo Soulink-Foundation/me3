@@ -22,6 +22,7 @@ import {
 definePage({
   meta: {
     requiresAuth: true,
+    requiresPlugin: "me3.landing-pages",
     title: "Landing Page Builder | ME3",
     description: "Build and preview a ME3 landing page.",
     robots: "noindex,follow",

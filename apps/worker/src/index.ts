@@ -49,6 +49,7 @@ import {
 } from "./install-secrets";
 import {
   buildLandingPageDocument,
+  LANDING_PAGES_PLUGIN_ID,
   getLandingPageTemplateId,
   normalizeLandingPageDocument,
   normalizeLandingTemplate,
@@ -1459,6 +1460,12 @@ app.post("/api/sites", async (c) => {
   if (cloudUsernameError) return c.json({ error: cloudUsernameError }, 409);
 
   const siteType = body.siteType === "landing_page" ? "landing_page" : "profile";
+  if (
+    siteType === "landing_page" &&
+    !(await isCorePluginEnabled(c.env, LANDING_PAGES_PLUGIN_ID))
+  ) {
+    return c.json({ error: "ME3 Landing Pages is coming soon" }, 403);
+  }
   const id = crypto.randomUUID();
 
   try {
@@ -1829,6 +1836,9 @@ app.get("/api/sites/:username/preview-html", async (c) => {
 app.get("/api/sites/:username/landing-page", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
+  if (!(await isCorePluginEnabled(c.env, LANDING_PAGES_PLUGIN_ID))) {
+    return c.json({ error: "ME3 Landing Pages is coming soon" }, 403);
+  }
 
   const site = await getSiteForOwner(c.env, ownerId, c.req.param("username"));
   if (!site) return c.json({ error: "Site not found" }, 404);
@@ -1854,6 +1864,9 @@ app.get("/api/sites/:username/landing-page", async (c) => {
 app.put("/api/sites/:username/landing-page", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
+  if (!(await isCorePluginEnabled(c.env, LANDING_PAGES_PLUGIN_ID))) {
+    return c.json({ error: "ME3 Landing Pages is coming soon" }, 403);
+  }
 
   const site = await getSiteForOwner(c.env, ownerId, c.req.param("username"));
   if (!site) return c.json({ error: "Site not found" }, 404);
@@ -1869,6 +1882,9 @@ app.put("/api/sites/:username/landing-page", async (c) => {
 app.post("/api/agent/landing-pages/generate", async (c) => {
   const ownerId = await requireOwner(c);
   if (!ownerId) return unauthorized(c);
+  if (!(await isCorePluginEnabled(c.env, LANDING_PAGES_PLUGIN_ID))) {
+    return c.json({ error: "ME3 Landing Pages is coming soon" }, 403);
+  }
 
   const body: LandingPageGenerateBody = await c.req
     .json<LandingPageGenerateBody>()
