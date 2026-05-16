@@ -1,0 +1,176 @@
+# ME3 Core
+
+> Installable ME3 Core personal/business AI assistant scaffold. ME3 Core is an owner-controlled assistant, identity layer, public site, private workspace, and plugin surface for a person or business.
+
+Repository: https://github.com/Soulink-Foundation/me3
+Knowledge schema: 2026-05-15.v1
+Generated from the typed ME3 knowledge package. This file is public-safe and should not include real secrets, production Cloudflare IDs, hosted subscription billing config, private memory, or customer data.
+
+## Product Knowledge
+
+- What ME3 is: ME3 is an assistant, identity layer, public site, and action surface for a person or business.
+- Public and private boundaries: Public me.json/profile data is separate from private memory, provider secrets, tasks, approvals, and local context.
+- Consent before action: Sending, publishing, booking, paying, editing local files, and running code require clear owner permission and auditability.
+- Core and hosted portability: ME3 Core is owner-controlled and installable. Hosted ME3 should reuse shared capability contracts while keeping billing and managed ops outside Core.
+
+## Core Boundaries
+
+- Public me.json/profile data is separate from private memory, provider secrets, tasks, approvals, and local context.
+- Core owns installable assistant runtime, owner profile, me.json output, setup-required integration states, and optional owner-supplied providers.
+- Hosted-only ME3 Cloud routes, production infrastructure, managed provider accounts, and hosted subscription billing stay outside the Core public docs artifact.
+- Consequential actions such as sending, publishing, booking, paying, editing local files, or running code require visible owner permission and auditability.
+
+## Capability Map
+
+- Core chat (chat.core_reply)
+  Category: assistant
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: ME3 can answer questions, reason with the owner, and explain the current Core install when an AI route is configured.
+  Approval mode: none
+  Side effect: none
+  Data boundary: Conversation history is owner-scoped inside the install.
+  App/API routes: /api/agent/sandbox, /api/assistant/chat
+  Agent tool ids: chat.core_reply
+  Requires: ai.chat_provider
+  Boundaries: Do not say external work was completed unless a tool or API result confirms it. If AI setup is missing, explain how to configure a provider instead of pretending a live model is active.
+- Public identity and me.json (identity.public_profile)
+  Category: identity
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: ME3 can publish the owner's public profile and me.json so other systems know who they are and what public actions are authorized.
+  Approval mode: owner_approval
+  Side effect: internal_write
+  Data boundary: Public profile data may be published; private memory must not leak into me.json unless explicitly mapped by the owner.
+  App/API routes: /.well-known/me.json, /api/account
+  Boundaries: Public me.json is not a dump of private context. Profile edits should be explicit owner changes.
+- Public site (sites.public_site)
+  Category: sites
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: ME3 can host a simple public site for the owner, including profile, links, booking/contact surfaces, and generated pages.
+  Approval mode: owner_approval
+  Side effect: internal_write
+  Data boundary: Site content is public once published; drafts and setup data remain owner-scoped.
+  App/API routes: /api/sites, /sites/:username
+  Boundaries: Distinguish drafts from published pages. Do not publish visible changes without owner intent.
+- Mission Control workspace (workspace.mission_control)
+  Category: workspace
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: Mission Control gives the owner a private workspace for daily capture, tasks, projects, approvals, private memory, context sources, and run history.
+  Approval mode: owner_approval
+  Side effect: internal_write
+  Data boundary: Mission Control data is private, owner-scoped, and plugin-owned.
+  App/API routes: /mission-control, /api/mission-control/overview
+  Agent tool ids: mission.capture.create, mission.task.create, mission.memory.write, mission.approval.request
+  Boundaries: Private memory writes should be visible and approval-aware. Public me.json remains Core-owned and separate from Mission Control memory.
+- Optional local daemon bridge (workspace.local_daemon_bridge)
+  Category: workspace
+  Surfaces: core
+  Lifecycle: partial
+  Runtime state in Core: partial
+  Summary: ME3 is designed to pair with an optional local daemon for explicitly approved local files, repos, and shell actions.
+  Approval mode: local_access_approval
+  Side effect: local_shell
+  Data boundary: Local file and repo access must be explicit, scoped, and audited.
+  App/API routes: /api/mission-control/daemon/*
+  Agent tool ids: mission.daemon.read, mission.daemon.write, mission.daemon.shell
+  Requires: mission.daemon_pairing
+  Boundaries: Do not claim local access unless the daemon is paired and the requested path/action is allowed. Never make local file or shell access implicit.
+- Calendar events and reminders (calendar.events_reminders)
+  Category: calendar
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: ME3 can manage native personal calendar events, reminders, bookings, birthdays, imported calendar sources, and recurring event expansion.
+  Approval mode: owner_approval
+  Side effect: internal_write
+  Data boundary: Calendar records are private owner workspace data unless explicitly shared through a public surface.
+  App/API routes: /calendar, /api/calendar/feed, /api/agent/reminders
+  Agent tool ids: calendar.event.create, calendar.reminder.create
+  Boundaries: Be precise about dates, times, and time zones. Do not claim a reminder or event was created without an API/tool result.
+- Mailbox drafts and approvals (mailbox.drafts_approvals)
+  Category: mailbox
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: ME3 can provide a Core mailbox, draft email replies, track mailbox activity, and require approval before sending outbound mail.
+  Approval mode: external_action_approval
+  Side effect: external_write
+  Data boundary: Mailbox messages and provider tokens are private; provider secrets are encrypted and never returned to the browser.
+  App/API routes: /email, /api/mailbox
+  Boundaries: Drafting is not sending. Sending email requires owner approval and provider readiness.
+- Contacts and relationships (contacts.relationships)
+  Category: contacts
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: ME3 can store contacts, relationship status, outreach status, notes, social handles, follow-up dates, and booking links.
+  Approval mode: owner_approval
+  Side effect: internal_write
+  Data boundary: Contacts are private owner workspace data unless explicitly published or exported.
+  App/API routes: /api/contacts
+  Boundaries: Do not expose private contact notes in public profile output. Be careful with outreach status and follow-up claims.
+- Social content publishing (content.social_publishing)
+  Category: content
+  Surfaces: core, hosted
+  Lifecycle: setup_required
+  Runtime state in Core: setup_required
+  Summary: ME3 can manage social content drafts, connected accounts, queue state, and approval-first publishing workflows when the social plugin is installed.
+  Approval mode: external_action_approval
+  Side effect: external_write
+  Data boundary: Drafts and queue state are owner-scoped; external publication reaches connected social platforms.
+  App/API routes: /social, /api/content/items, /api/social/accounts
+  Agent tool ids: content.write_preview, content.publish
+  Requires: social.oauth_accounts, social.publish_queue
+  Boundaries: Never represent queued or drafted content as published. External publishing requires owner approval and provider setup.
+- Landing page generation (sites.landing_pages)
+  Category: sites
+  Surfaces: core, hosted
+  Lifecycle: coming_soon
+  Runtime state in Core: coming_soon
+  Summary: ME3 has a first-party landing-page package for draft generation and rendering, but the Core catalog currently marks it as coming soon.
+  Approval mode: owner_approval
+  Side effect: internal_write
+  Data boundary: Landing-page drafts are owner-scoped until published.
+  App/API routes: /api/agent/landing-pages/generate
+  Agent tool ids: landing_pages.generate_draft
+  Requires: landing_pages.plugin_enabled
+  Boundaries: Call this coming soon unless runtime/plugin state proves it is enabled. Generated drafts are not published pages.
+- AI provider routing (ai.chat_provider)
+  Category: providers
+  Surfaces: core, hosted
+  Lifecycle: setup_required
+  Runtime state in Core: setup_required
+  Summary: ME3 can route chat through Workers AI, OpenAI, or Anthropic when the owner configures a provider or binding.
+  Approval mode: none
+  Side effect: none
+  Data boundary: Provider API keys are private install secrets and should not be exposed.
+  App/API routes: /account, /api/ai-settings
+  Requires: workers_ai_or_api_key
+  Boundaries: Do not expose provider secrets. Distinguish configured model routes from fallback shell responses.
+- Approvals and audit trail (safety.approvals_audit)
+  Category: safety
+  Surfaces: core, hosted
+  Lifecycle: available
+  Runtime state in Core: available
+  Summary: ME3 is designed around visible approvals and audit trails for consequential work across plugins and local/hosted surfaces.
+  Approval mode: owner_approval
+  Side effect: internal_write
+  Data boundary: Approvals and audit records are private workspace data.
+  App/API routes: /mission-control, /api/mission-control/approvals
+  Agent tool ids: mission.approval.request
+  Boundaries: Consequential actions should be reviewable. Approval state should be visible rather than hidden in prompt context.
+
+## Source Documents
+
+- [ME3 Core README](https://github.com/Soulink-Foundation/me3/blob/main/README.md): Installable Core overview, product principles, local setup, deploy flow, and Core vs hosted boundaries.
+- [ME3 Knowledge README](https://github.com/Soulink-Foundation/me3/blob/main/packages/knowledge/README.md): Explains the shared typed product and capability knowledge package that powers this artifact.
+- [ME3 Knowledge Source](https://github.com/Soulink-Foundation/me3/blob/main/packages/knowledge/src/index.ts): Typed product facts, capability map, approval modes, side effects, data boundaries, routes, and agent tool ids.
+- [Mission Control Plugin MVP](https://github.com/Soulink-Foundation/me3/blob/main/docs/mission-control-plugin-mvp.md): Implementation outline for the default private workspace plugin in ME3 Core.
+

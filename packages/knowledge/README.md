@@ -11,3 +11,12 @@ and empty states.
 The first slice is intentionally static and versioned with code. Plugin manifests
 and user-specific install state can be merged at runtime through
 `getMe3KnowledgeSnapshot` or `buildMe3CapabilityContext`.
+
+## LLM Docs Artifact
+
+`pnpm generate:llms` writes `apps/web/public/llms.txt` from this package so Core
+installs can expose a compact, public-safe capability map at `/llms.txt`.
+
+Keep this artifact generated from typed knowledge rather than hand-edited. The
+future `llms-full.txt` docs bundle should stay separate until the Core docs
+corpus is large enough to justify one-shot ingestion.

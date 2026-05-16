@@ -155,6 +155,17 @@ export type Me3KnowledgeSnapshot = {
   plugins?: readonly Me3KnowledgePluginDerivedSummary[];
 };
 
+export type Me3LlmsDocumentSource = {
+  title: string;
+  url: string;
+  description: string;
+};
+
+export type Me3LlmsTextOptions = {
+  repositoryUrl?: string;
+  sourceDocuments?: readonly Me3LlmsDocumentSource[];
+};
+
 export const ME3_PRODUCT_KNOWLEDGE: readonly Me3KnowledgeFact[] = [
   {
     id: "me3.product.identity",
@@ -565,6 +576,84 @@ export function buildMe3CapabilityContext(
     "",
     "ME3 runtime guidance:",
     ...runtimeLines,
+  ].join("\n");
+}
+
+export function buildMe3LlmsText(
+  options: Me3LlmsTextOptions = {},
+): string {
+  const repositoryUrl = options.repositoryUrl || "https://github.com/Soulink-Foundation/me3";
+  const snapshot = getMe3KnowledgeSnapshot({
+    surface: "core",
+    includeComingSoon: true,
+    chatRuntime: "conversation_only",
+  });
+
+  const productLines = snapshot.facts
+    .filter((fact) => fact.audiences.includes("docs"))
+    .map((fact) => `- ${fact.title}: ${fact.summary}`);
+
+  const capabilityLines = snapshot.capabilities.map((capability) => {
+    const lines = [
+      `- ${capability.title} (${capability.id})`,
+      `  Category: ${capability.category}`,
+      `  Surfaces: ${capability.surfaces.join(", ")}`,
+      `  Lifecycle: ${capability.lifecycle}`,
+      `  Runtime state in Core: ${capability.runtimeState}`,
+      `  Summary: ${capability.summary}`,
+      `  Approval mode: ${capability.approvalMode}`,
+      `  Side effect: ${capability.sideEffect}`,
+      `  Data boundary: ${capability.dataBoundary}`,
+    ];
+
+    if (capability.appRoutes?.length) {
+      lines.push(`  App/API routes: ${capability.appRoutes.join(", ")}`);
+    }
+    if (capability.agentToolIds?.length) {
+      lines.push(`  Agent tool ids: ${capability.agentToolIds.join(", ")}`);
+    }
+    if (capability.requires?.length) {
+      lines.push(`  Requires: ${capability.requires.join(", ")}`);
+    }
+    if (capability.boundaries.length) {
+      lines.push(`  Boundaries: ${capability.boundaries.join(" ")}`);
+    }
+
+    return lines.join("\n");
+  });
+
+  const sourceLines = (options.sourceDocuments || []).map(
+    (source) => `- [${source.title}](${source.url}): ${source.description}`,
+  );
+
+  return [
+    "# ME3 Core",
+    "",
+    "> Installable ME3 Core personal/business AI assistant scaffold. ME3 Core is an owner-controlled assistant, identity layer, public site, private workspace, and plugin surface for a person or business.",
+    "",
+    `Repository: ${repositoryUrl}`,
+    `Knowledge schema: ${snapshot.schemaVersion}`,
+    "Generated from the typed ME3 knowledge package. This file is public-safe and should not include real secrets, production Cloudflare IDs, hosted subscription billing config, private memory, or customer data.",
+    "",
+    "## Product Knowledge",
+    "",
+    ...productLines,
+    "",
+    "## Core Boundaries",
+    "",
+    "- Public me.json/profile data is separate from private memory, provider secrets, tasks, approvals, and local context.",
+    "- Core owns installable assistant runtime, owner profile, me.json output, setup-required integration states, and optional owner-supplied providers.",
+    "- Hosted-only ME3 Cloud routes, production infrastructure, managed provider accounts, and hosted subscription billing stay outside the Core public docs artifact.",
+    "- Consequential actions such as sending, publishing, booking, paying, editing local files, or running code require visible owner permission and auditability.",
+    "",
+    "## Capability Map",
+    "",
+    ...capabilityLines,
+    "",
+    "## Source Documents",
+    "",
+    ...sourceLines,
+    "",
   ].join("\n");
 }
 
