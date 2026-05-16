@@ -10,6 +10,18 @@ import {
   updateAiSettings,
 } from "./ai-providers";
 import {
+  AssistantJobsInputError,
+  archiveAssistantJob,
+  createAssistantJob,
+  duplicateAssistantJob,
+  getAssistantJob,
+  listAssistantJobRecipes,
+  listAssistantJobs,
+  runAssistantJobNow,
+  setAssistantJobPaused,
+  updateAssistantJob,
+} from "./assistant-jobs";
+import {
   EmailProviderInputError,
   getEmailProviderSettings,
   sendEmailProviderTest,
@@ -537,6 +549,121 @@ app.post("/api/assistant/chat", async (c) => {
     reply: "ME3 Core assistant shell is booted. Model execution will be wired in the first bootable slice.",
     setupRequired: await getSetupRequired(c.env, ownerId),
   });
+});
+
+app.get("/api/assistant/jobs/recipes", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+  return c.json(listAssistantJobRecipes());
+});
+
+app.get("/api/assistant/jobs", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(await listAssistantJobs(c.env, ownerId, c.req.query("status")));
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.get("/api/assistant/jobs/:id", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(await getAssistantJob(c.env, ownerId, c.req.param("id")));
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.post("/api/assistant/jobs", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(
+      await createAssistantJob(c.env, ownerId, await c.req.json().catch(() => ({}))),
+      201,
+    );
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.patch("/api/assistant/jobs/:id", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(
+      await updateAssistantJob(
+        c.env,
+        ownerId,
+        c.req.param("id"),
+        await c.req.json().catch(() => ({})),
+      ),
+    );
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.post("/api/assistant/jobs/:id/pause", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(await setAssistantJobPaused(c.env, ownerId, c.req.param("id"), true));
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.post("/api/assistant/jobs/:id/resume", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(await setAssistantJobPaused(c.env, ownerId, c.req.param("id"), false));
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.post("/api/assistant/jobs/:id/duplicate", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(await duplicateAssistantJob(c.env, ownerId, c.req.param("id")), 201);
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.post("/api/assistant/jobs/:id/run", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(await runAssistantJobNow(c.env, ownerId, c.req.param("id")), 201);
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
+});
+
+app.delete("/api/assistant/jobs/:id", async (c) => {
+  const ownerId = await requireOwner(c);
+  if (!ownerId) return unauthorized(c);
+
+  try {
+    return c.json(await archiveAssistantJob(c.env, ownerId, c.req.param("id")));
+  } catch (error) {
+    return assistantJobsErrorResponse(c, error);
+  }
 });
 
 app.post("/api/agent/sandbox", async (c) => {
@@ -4017,6 +4144,13 @@ async function requireOwner(c: AppContext): Promise<string | null> {
 
 function unauthorized(c: AppContext) {
   return c.json({ ok: false, error: "Authentication required" }, 401);
+}
+
+function assistantJobsErrorResponse(c: AppContext, error: unknown) {
+  if (error instanceof AssistantJobsInputError) {
+    return c.json({ ok: false, error: error.message }, error.status as any);
+  }
+  throw error;
 }
 
 function socialPublishingErrorResponse(c: AppContext, error: unknown) {

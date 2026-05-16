@@ -138,6 +138,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@me3-core/assistant-jobs':
+        specifier: workspace:*
+        version: link:../../packages/assistant-jobs
       '@me3-core/plugin-agent-chat':
         specifier: workspace:*
         version: link:../../packages/agent-chat
