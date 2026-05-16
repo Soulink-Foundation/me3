@@ -153,6 +153,80 @@ Guidelines:
 - Keep hosted-only data and billing out of Core contracts.
 - Add fixture-based tests that can run in both repos.
 
+### Portable Boundaries
+
+Pure shared logic:
+
+- `packages/knowledge/src/agent-context.ts`
+  - Packet schema.
+  - Source manifest shape.
+  - Prompt builder.
+  - Deterministic resolver over candidate source slices.
+  - Validation rules for public/private boundaries.
+- `packages/assistant-jobs/src/index.ts`
+  - Assistant Job capability/draft model.
+  - `createAssistantJobContext` for scoped job/run context packets.
+  - `createAssistantJobContextRunManifest` for serializable run records.
+  - `attachAssistantJobContextToRunResult` for Mission Control run result JSON.
+
+Core-specific adapters:
+
+- `packages/agent-chat/src/index.ts`
+  - Cloudflare D1 queries for Core contacts, mailbox messages, Mission Control memory, projects, tasks, calendar events, and recent chat messages.
+  - Core sandbox chat prompt assembly.
+  - AI provider routing and fallback behavior.
+
+Do not migrate blindly:
+
+- `apps/worker/wrangler*.toml`.
+- `.dev.vars`.
+- production Cloudflare account IDs, route IDs, R2/D1 names, or hosted domains.
+- hosted subscription or billing config.
+- provider secrets or encrypted local install secrets.
+
+### Source Mapping For me3-app
+
+When cloning into `me3-app`, keep the shared packet contract unchanged and replace only the source adapters.
+
+| Context source | Core scaffold source today | me3-app adapter target |
+| --- | --- | --- |
+| Owner profile | `owner_profile` rows | me3-app owner/user profile model |
+| Public identity | `/.well-known/me.json` / public profile fields | published me.json/profile source in me3-app |
+| Contacts | `contacts` table | me3-app contacts/CRM source |
+| Email threads | `mailbox_aliases` + `mailbox_messages` | me3-app email provider/thread abstraction |
+| Projects | `mission_projects` | me3-app project/workspace model |
+| Tasks | `mission_tasks` | me3-app task/work item model |
+| Calendar | `user_calendar_events` | me3-app calendar/event provider abstraction |
+| Private memory | `mission_private_memory` | Mission Control/private memory store in me3-app |
+| Recent assistant chat | `assistant_messages` | me3-app assistant conversation history |
+| Job run context | Assistant Jobs context helpers + `mission_agent_runs.result_json` | me3-app job runner/run record model |
+
+### Migration Checklist
+
+1. Copy or publish `@me3/knowledge` with `agent-context.ts` and its tests.
+2. Copy or publish `@me3-core/assistant-jobs` context helpers if Assistant Jobs move with the feature.
+3. Keep Core D1 loader code out of the shared package. Rebuild adapters in me3-app against its own repositories/services.
+4. Preserve source IDs, source kinds, visibility, resolver reasons, and trim metadata in manifests.
+5. Make the me3-app runner store `contextPacketId` and `contextManifest` on run records before adding UI.
+6. Keep private memory writes owner-approved and Mission Control-visible.
+7. Run the shared fixture tests before wiring models.
+8. Add me3-app adapter tests for:
+   - named contact lookup,
+   - active email thread lookup,
+   - active project/job scope,
+   - private memory inclusion/exclusion,
+   - source failure fallback,
+   - prompt budget trimming,
+   - no unrelated contact/project/email bleed.
+
+### Tests To Carry Across
+
+- `packages/knowledge/src/agent-context.test.ts`
+- `packages/assistant-jobs/src/index.test.ts` context cases
+- `apps/worker/src/agent-chat-context.test.ts` as adapter guidance, not a direct copy unless me3-app uses the same Worker/D1 shape.
+
+The first two should run with minimal changes in both repos. The chat adapter test should be rewritten around me3-app's own API/runtime surface while preserving the assertions.
+
 ## Current Decision
 
 Work toward native ME3 context first. If native context starts to feel limited, evaluate a separate retrieval or memory adapter later behind the same contract.
@@ -167,3 +241,4 @@ Work toward native ME3 context first. If native context starts to feel limited, 
 - `me3-ctx.5`: Add owner-approved remember, forget, and memory review flows.
 - `me3-ctx.6`: Expose context source manifests for trust and debugging.
 - `me3-ctx.7`: Plan and prove me3-app migration path for native context system.
+- `me3-ctx.8`: Integrate native context with concrete Assistant Jobs runner.
