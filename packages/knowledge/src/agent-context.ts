@@ -82,6 +82,8 @@ export type Me3AgentContextPrivateMemory = {
 export type Me3AgentContextContact = {
   id: string;
   name: string;
+  aliases?: readonly string[];
+  email?: string | null;
   relationship?: string | null;
   summary?: string | null;
   lastInteractionAt?: string | null;
@@ -92,6 +94,8 @@ export type Me3AgentContextEmailThread = {
   id: string;
   subject?: string | null;
   participants?: readonly string[];
+  contactId?: string | null;
+  projectId?: string | null;
   summary: string;
   lastMessageAt?: string | null;
   source: Me3AgentContextSource;
@@ -100,6 +104,7 @@ export type Me3AgentContextEmailThread = {
 export type Me3AgentContextProject = {
   id: string;
   name: string;
+  aliases?: readonly string[];
   summary?: string | null;
   status?: string | null;
   source: Me3AgentContextSource;
@@ -129,6 +134,45 @@ export type Me3AgentContextRecentMessage = {
   content: string;
   createdAt?: string | null;
   source: Me3AgentContextSource;
+};
+
+export type Me3AgentContextResolverScope = {
+  contactId?: string | null;
+  emailThreadId?: string | null;
+  projectId?: string | null;
+  date?: string | null;
+};
+
+export type Me3AgentContextResolverOptions = {
+  maxPrivateMemory?: number;
+  maxContacts?: number;
+  maxEmailThreads?: number;
+  maxProjects?: number;
+  maxTasks?: number;
+  maxCalendarEvents?: number;
+  maxRecentMessages?: number;
+};
+
+export type Me3AgentContextResolverInput = Omit<
+  Me3AgentContextPacketInput,
+  | "privateMemory"
+  | "contacts"
+  | "emailThreads"
+  | "projects"
+  | "tasks"
+  | "calendarEvents"
+  | "recentMessages"
+> & {
+  requestText?: string | null;
+  activeScope?: Me3AgentContextResolverScope;
+  candidatePrivateMemory?: readonly Me3AgentContextPrivateMemory[];
+  candidateContacts?: readonly Me3AgentContextContact[];
+  candidateEmailThreads?: readonly Me3AgentContextEmailThread[];
+  candidateProjects?: readonly Me3AgentContextProject[];
+  candidateTasks?: readonly Me3AgentContextTask[];
+  candidateCalendarEvents?: readonly Me3AgentContextCalendarEvent[];
+  candidateRecentMessages?: readonly Me3AgentContextRecentMessage[];
+  resolverOptions?: Me3AgentContextResolverOptions;
 };
 
 export type Me3AgentContextPacketInput = {
@@ -193,10 +237,117 @@ const DEFAULT_CONTEXT_BUDGET: Me3AgentContextBudget = {
   trimReason: null,
 };
 
+const DEFAULT_RESOLVER_OPTIONS: Required<Me3AgentContextResolverOptions> = {
+  maxPrivateMemory: 6,
+  maxContacts: 3,
+  maxEmailThreads: 3,
+  maxProjects: 3,
+  maxTasks: 8,
+  maxCalendarEvents: 6,
+  maxRecentMessages: 8,
+};
+
 const PUBLIC_SOURCE_KINDS = new Set<Me3AgentContextSourceKind>([
   "owner_profile",
   "public_me_json",
 ]);
+
+export function resolveMe3AgentContextPacket(
+  input: Me3AgentContextResolverInput,
+): Me3AgentContextPacket {
+  const options = normalizeResolverOptions(input.resolverOptions);
+  const requestText = input.requestText || input.requestSummary || "";
+  const requestTokens = tokenize(requestText);
+  const warnings: string[] = [...(input.warnings || [])];
+
+  let contacts = resolveContacts({
+    contacts: input.candidateContacts || [],
+    activeContactId: input.activeScope?.contactId || null,
+    requestText,
+    requestTokens,
+    maxContacts: options.maxContacts,
+    warnings,
+  });
+  const contactIds = new Set(contacts.map((contact) => contact.id));
+
+  const emailThreads = resolveEmailThreads({
+    emailThreads: input.candidateEmailThreads || [],
+    activeEmailThreadId: input.activeScope?.emailThreadId || null,
+    contactIds,
+    projectId: input.activeScope?.projectId || null,
+    requestTokens,
+    maxEmailThreads: options.maxEmailThreads,
+  });
+  for (const thread of emailThreads) {
+    if (thread.contactId) contactIds.add(thread.contactId);
+  }
+  contacts = [
+    ...contacts,
+    ...(input.candidateContacts || [])
+      .filter(
+        (contact) =>
+          contactIds.has(contact.id) &&
+          !contacts.some((selected) => selected.id === contact.id),
+      )
+      .slice(0, Math.max(0, options.maxContacts - contacts.length))
+      .map((contact) => withSourceReason(contact, "Linked to selected email thread.")),
+  ];
+
+  const projects = resolveProjects({
+    projects: input.candidateProjects || [],
+    activeProjectId: input.activeScope?.projectId || null,
+    emailThreads,
+    requestText,
+    requestTokens,
+    maxProjects: options.maxProjects,
+    warnings,
+  });
+  const projectIds = new Set(projects.map((project) => project.id));
+  for (const thread of emailThreads) {
+    if (thread.projectId) projectIds.add(thread.projectId);
+  }
+
+  const tasks = resolveTasks({
+    tasks: input.candidateTasks || [],
+    projectIds,
+    requestTokens,
+    activeDate: input.activeScope?.date || null,
+    maxTasks: options.maxTasks,
+  });
+  const calendarEvents = resolveCalendarEvents({
+    events: input.candidateCalendarEvents || [],
+    requestTokens,
+    activeDate: input.activeScope?.date || null,
+    maxCalendarEvents: options.maxCalendarEvents,
+  });
+  const privateMemory = resolvePrivateMemory({
+    memory: input.candidatePrivateMemory || [],
+    contactIds,
+    projectIds,
+    requestTokens,
+    maxPrivateMemory: options.maxPrivateMemory,
+  });
+  const recentMessages = [...(input.candidateRecentMessages || [])]
+    .slice(-options.maxRecentMessages)
+    .map((message) =>
+      withSourceReason(
+        message,
+        "Recent assistant message retained for immediate conversation context.",
+      ),
+    );
+
+  return createMe3AgentContextPacket({
+    ...input,
+    privateMemory,
+    contacts,
+    emailThreads,
+    projects,
+    tasks,
+    calendarEvents,
+    recentMessages,
+    warnings,
+  });
+}
 
 export function createMe3AgentContextPacket(
   input: Me3AgentContextPacketInput,
@@ -382,6 +533,25 @@ function normalizeBudget(
   };
 }
 
+function normalizeResolverOptions(
+  options: Me3AgentContextResolverOptions | undefined,
+): Required<Me3AgentContextResolverOptions> {
+  return {
+    maxPrivateMemory: positiveLimit(options?.maxPrivateMemory, DEFAULT_RESOLVER_OPTIONS.maxPrivateMemory),
+    maxContacts: positiveLimit(options?.maxContacts, DEFAULT_RESOLVER_OPTIONS.maxContacts),
+    maxEmailThreads: positiveLimit(options?.maxEmailThreads, DEFAULT_RESOLVER_OPTIONS.maxEmailThreads),
+    maxProjects: positiveLimit(options?.maxProjects, DEFAULT_RESOLVER_OPTIONS.maxProjects),
+    maxTasks: positiveLimit(options?.maxTasks, DEFAULT_RESOLVER_OPTIONS.maxTasks),
+    maxCalendarEvents: positiveLimit(options?.maxCalendarEvents, DEFAULT_RESOLVER_OPTIONS.maxCalendarEvents),
+    maxRecentMessages: positiveLimit(options?.maxRecentMessages, DEFAULT_RESOLVER_OPTIONS.maxRecentMessages),
+  };
+}
+
+function positiveLimit(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value) || !value || value < 1) return fallback;
+  return Math.floor(value);
+}
+
 function normalizeOwnerProfile(
   profile: Me3AgentContextOwnerProfile,
 ): Me3AgentContextOwnerProfile {
@@ -480,6 +650,325 @@ function normalizeSourceVisibility(
     return "private";
   }
   return visibility;
+}
+
+type ScoredContextItem<T> = {
+  item: T;
+  score: number;
+  reason: string;
+};
+
+function resolveContacts(input: {
+  contacts: readonly Me3AgentContextContact[];
+  activeContactId: string | null;
+  requestText: string;
+  requestTokens: ReadonlySet<string>;
+  maxContacts: number;
+  warnings: string[];
+}): readonly Me3AgentContextContact[] {
+  if (!input.contacts.length) return [];
+  const requestText = normalizeText(input.requestText);
+  const scored = input.contacts
+    .map((contact): ScoredContextItem<Me3AgentContextContact> | null => {
+      if (input.activeContactId && contact.id === input.activeContactId) {
+        return { item: contact, score: 100, reason: "Active contact scope." };
+      }
+      const labels = contactLabels(contact);
+      if (labels.some((label) => phraseMatches(requestText, label, 2))) {
+        return { item: contact, score: 80, reason: "Contact name matched the request." };
+      }
+      if (contact.email && phraseMatches(requestText, contact.email, 1)) {
+        return { item: contact, score: 75, reason: "Contact email matched the request." };
+      }
+      if (labels.some((label) => tokenOverlap(label, input.requestTokens) > 0)) {
+        return { item: contact, score: 45, reason: "Contact token matched the request." };
+      }
+      return null;
+    })
+    .filter((item): item is ScoredContextItem<Me3AgentContextContact> => Boolean(item));
+
+  const topScore = Math.max(0, ...scored.map((item) => item.score));
+  const topMatches = scored.filter((item) => item.score === topScore);
+  if (!input.activeContactId && topScore < 80 && topMatches.length > 1) {
+    input.warnings.push(
+      `Ambiguous contact match for "${input.requestText.trim()}"; no contact context was selected.`,
+    );
+    return [];
+  }
+
+  return scored
+    .sort(compareScoredItems)
+    .slice(0, input.maxContacts)
+    .map(({ item, reason }) => withSourceReason(item, reason));
+}
+
+function resolveEmailThreads(input: {
+  emailThreads: readonly Me3AgentContextEmailThread[];
+  activeEmailThreadId: string | null;
+  contactIds: ReadonlySet<string>;
+  projectId: string | null;
+  requestTokens: ReadonlySet<string>;
+  maxEmailThreads: number;
+}): readonly Me3AgentContextEmailThread[] {
+  return input.emailThreads
+    .map((thread): ScoredContextItem<Me3AgentContextEmailThread> | null => {
+      if (input.activeEmailThreadId && thread.id === input.activeEmailThreadId) {
+        return { item: thread, score: 100, reason: "Active email thread scope." };
+      }
+      if (thread.contactId && input.contactIds.has(thread.contactId)) {
+        return { item: thread, score: 70, reason: "Linked to selected contact." };
+      }
+      if (thread.projectId && thread.projectId === input.projectId) {
+        return { item: thread, score: 65, reason: "Linked to active project." };
+      }
+      const searchable = [thread.subject, thread.summary, ...(thread.participants || [])]
+        .filter((value): value is string => Boolean(value))
+        .join(" ");
+      const overlap = tokenOverlap(searchable, input.requestTokens);
+      if (overlap > 0) {
+        return { item: thread, score: 40 + overlap, reason: "Email thread matched the request." };
+      }
+      return null;
+    })
+    .filter((item): item is ScoredContextItem<Me3AgentContextEmailThread> => Boolean(item))
+    .sort(compareScoredItems)
+    .slice(0, input.maxEmailThreads)
+    .map(({ item, reason }) => withSourceReason(item, reason));
+}
+
+function resolveProjects(input: {
+  projects: readonly Me3AgentContextProject[];
+  activeProjectId: string | null;
+  emailThreads: readonly Me3AgentContextEmailThread[];
+  requestText: string;
+  requestTokens: ReadonlySet<string>;
+  maxProjects: number;
+  warnings: string[];
+}): readonly Me3AgentContextProject[] {
+  const requestText = normalizeText(input.requestText);
+  const emailProjectIds = new Set(
+    input.emailThreads
+      .map((thread) => thread.projectId)
+      .filter((projectId): projectId is string => Boolean(projectId)),
+  );
+  const scored = input.projects
+    .map((project): ScoredContextItem<Me3AgentContextProject> | null => {
+      if (input.activeProjectId && project.id === input.activeProjectId) {
+        return { item: project, score: 100, reason: "Active project scope." };
+      }
+      if (emailProjectIds.has(project.id)) {
+        return { item: project, score: 75, reason: "Linked to selected email thread." };
+      }
+      const labels = projectLabels(project);
+      if (labels.some((label) => phraseMatches(requestText, label, 2))) {
+        return { item: project, score: 80, reason: "Project name matched the request." };
+      }
+      if (labels.some((label) => tokenOverlap(label, input.requestTokens) > 0)) {
+        return { item: project, score: 45, reason: "Project token matched the request." };
+      }
+      return null;
+    })
+    .filter((item): item is ScoredContextItem<Me3AgentContextProject> => Boolean(item));
+
+  const topScore = Math.max(0, ...scored.map((item) => item.score));
+  const topMatches = scored.filter((item) => item.score === topScore);
+  if (!input.activeProjectId && topScore < 80 && topMatches.length > 1) {
+    input.warnings.push(
+      `Ambiguous project match for "${input.requestText.trim()}"; no project context was selected.`,
+    );
+    return [];
+  }
+
+  return scored
+    .sort(compareScoredItems)
+    .slice(0, input.maxProjects)
+    .map(({ item, reason }) => withSourceReason(item, reason));
+}
+
+function resolveTasks(input: {
+  tasks: readonly Me3AgentContextTask[];
+  projectIds: ReadonlySet<string>;
+  requestTokens: ReadonlySet<string>;
+  activeDate: string | null;
+  maxTasks: number;
+}): readonly Me3AgentContextTask[] {
+  return input.tasks
+    .map((task): ScoredContextItem<Me3AgentContextTask> | null => {
+      const projectMatch = task.projectId && input.projectIds.has(task.projectId);
+      const dateMatch = Boolean(input.activeDate && task.dueAt?.startsWith(input.activeDate));
+      const overlap = tokenOverlap(task.title, input.requestTokens);
+      const score = (projectMatch ? 70 : 0) + (dateMatch ? 45 : 0) + overlap * 5;
+      if (score <= 0) return null;
+      return {
+        item: task,
+        score,
+        reason: projectMatch
+          ? "Linked to selected project."
+          : dateMatch
+            ? "Due in active date scope."
+            : "Task title matched the request.",
+      };
+    })
+    .filter((item): item is ScoredContextItem<Me3AgentContextTask> => Boolean(item))
+    .sort(compareScoredItems)
+    .slice(0, input.maxTasks)
+    .map(({ item, reason }) => withSourceReason(item, reason));
+}
+
+function resolveCalendarEvents(input: {
+  events: readonly Me3AgentContextCalendarEvent[];
+  requestTokens: ReadonlySet<string>;
+  activeDate: string | null;
+  maxCalendarEvents: number;
+}): readonly Me3AgentContextCalendarEvent[] {
+  return input.events
+    .map((event): ScoredContextItem<Me3AgentContextCalendarEvent> | null => {
+      const dateMatch = Boolean(input.activeDate && event.startsAt?.startsWith(input.activeDate));
+      const overlap = tokenOverlap(event.title, input.requestTokens);
+      const score = (dateMatch ? 70 : 0) + overlap * 5;
+      if (score <= 0) return null;
+      return {
+        item: event,
+        score,
+        reason: dateMatch ? "In active date scope." : "Calendar event matched the request.",
+      };
+    })
+    .filter((item): item is ScoredContextItem<Me3AgentContextCalendarEvent> => Boolean(item))
+    .sort(compareScoredItems)
+    .slice(0, input.maxCalendarEvents)
+    .map(({ item, reason }) => withSourceReason(item, reason));
+}
+
+function resolvePrivateMemory(input: {
+  memory: readonly Me3AgentContextPrivateMemory[];
+  contactIds: ReadonlySet<string>;
+  projectIds: ReadonlySet<string>;
+  requestTokens: ReadonlySet<string>;
+  maxPrivateMemory: number;
+}): readonly Me3AgentContextPrivateMemory[] {
+  return input.memory
+    .map((memory): ScoredContextItem<Me3AgentContextPrivateMemory> | null => {
+      const scope = memory.scope || "";
+      const scopedToContact = matchesScopedId(scope, "contact", input.contactIds);
+      const scopedToProject = matchesScopedId(scope, "project", input.projectIds);
+      const searchable = [memory.kind, memory.title, memory.body]
+        .filter((value): value is string => Boolean(value))
+        .join(" ");
+      const overlap = tokenOverlap(searchable, input.requestTokens);
+      const score = (scopedToContact || scopedToProject ? 80 : 0) + overlap * 5;
+      if (score <= 0) return null;
+      return {
+        item: memory,
+        score,
+        reason: scopedToContact
+          ? "Scoped to selected contact."
+          : scopedToProject
+            ? "Scoped to selected project."
+            : "Memory matched the request.",
+      };
+    })
+    .filter((item): item is ScoredContextItem<Me3AgentContextPrivateMemory> => Boolean(item))
+    .sort(compareScoredItems)
+    .slice(0, input.maxPrivateMemory)
+    .map(({ item, reason }) => withSourceReason(item, reason));
+}
+
+function withSourceReason<T extends { source: Me3AgentContextSource }>(
+  item: T,
+  reason: string,
+): T {
+  return {
+    ...item,
+    source: {
+      ...item.source,
+      reason: item.source.reason || reason,
+      status: item.source.status || "included",
+    },
+  };
+}
+
+function compareScoredItems<T>(
+  left: ScoredContextItem<T>,
+  right: ScoredContextItem<T>,
+): number {
+  return right.score - left.score || stableItemLabel(left.item).localeCompare(stableItemLabel(right.item));
+}
+
+function contactLabels(contact: Me3AgentContextContact): readonly string[] {
+  return [contact.name, ...(contact.aliases || [])].filter(Boolean);
+}
+
+function projectLabels(project: Me3AgentContextProject): readonly string[] {
+  return [project.name, ...(project.aliases || [])].filter(Boolean);
+}
+
+function phraseMatches(
+  normalizedHaystack: string,
+  value: string,
+  minTokens: number,
+): boolean {
+  const normalizedValue = normalizeText(value);
+  if (!normalizedValue) return false;
+  if (tokenize(normalizedValue).size < minTokens) return false;
+  return normalizedHaystack.includes(normalizedValue);
+}
+
+function tokenOverlap(value: string, requestTokens: ReadonlySet<string>): number {
+  let count = 0;
+  for (const token of tokenize(value)) {
+    if (requestTokens.has(token)) count += 1;
+  }
+  return count;
+}
+
+function tokenize(value: string): ReadonlySet<string> {
+  return new Set(
+    normalizeText(value)
+      .split(" ")
+      .filter((token) => token.length > 1),
+  );
+}
+
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9@._+-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function matchesScopedId(
+  scope: string,
+  kind: "contact" | "project",
+  ids: ReadonlySet<string>,
+): boolean {
+  if (!scope || ids.size === 0) return false;
+  const normalizedScope = normalizeText(scope).replace(/\s/g, "");
+  for (const id of ids) {
+    const normalizedId = normalizeText(id).replace(/\s/g, "");
+    if (
+      normalizedScope === normalizedId ||
+      normalizedScope === `${kind}:${normalizedId}` ||
+      normalizedScope === `${kind}-${normalizedId}`
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function stableItemLabel(item: unknown): string {
+  if (isRecord(item)) {
+    for (const key of ["id", "name", "title", "subject"]) {
+      const value = item[key];
+      if (typeof value === "string") return value;
+    }
+  }
+  return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function collectMe3AgentContextSources(

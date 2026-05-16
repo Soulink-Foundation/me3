@@ -2,8 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildMe3AgentContextPrompt,
   createMe3AgentContextPacket,
+  resolveMe3AgentContextPacket,
   validateMe3AgentContextPacket,
+  type Me3AgentContextContact,
+  type Me3AgentContextEmailThread,
+  type Me3AgentContextPrivateMemory,
+  type Me3AgentContextProject,
   type Me3AgentContextSource,
+  type Me3AgentContextTask,
 } from "./agent-context";
 
 const ownerSource: Me3AgentContextSource = {
@@ -281,3 +287,262 @@ describe("ME3 agent context contract", () => {
     expect(validateMe3AgentContextPacket(packet)).toEqual([]);
   });
 });
+
+describe("ME3 agent context resolvers", () => {
+  it("selects relevant contact, email, project, task, calendar, and memory context", () => {
+    const packet = resolveMe3AgentContextPacket({
+      id: "resolved-1",
+      generatedAt: "2026-05-16T10:00:00.000Z",
+      ownerId: "owner",
+      purpose: "chat_reply",
+      requestText: "Help me reply to Ada about the workflow notes.",
+      ownerProfile: {
+        displayName: "Kieran",
+        source: ownerSource,
+      },
+      publicIdentity: {
+        summary: "Public identity.",
+        source: meJsonSource,
+      },
+      candidateContacts: [
+        contact("contact-ada", "Ada Lovelace", "client"),
+        contact("contact-grace", "Grace Hopper", "lead"),
+      ],
+      candidateEmailThreads: [
+        emailThread(
+          "thread-ada",
+          "Workflow notes",
+          "Ada asked for a Friday update.",
+          "contact-ada",
+          "project-analytics",
+        ),
+        emailThread(
+          "thread-grace",
+          "Compiler invoices",
+          "Grace sent a finance note.",
+          "contact-grace",
+          "project-compiler",
+        ),
+      ],
+      candidateProjects: [
+        project("project-analytics", "Analytics Workflow"),
+        project("project-compiler", "Compiler Research"),
+      ],
+      candidateTasks: [
+        task("task-ada", "Send Ada the Friday workflow update", "project-analytics"),
+        task("task-grace", "Review compiler invoice", "project-compiler"),
+      ],
+      candidateCalendarEvents: [
+        {
+          id: "event-ada",
+          title: "Ada workflow check-in",
+          startsAt: "2026-05-18T14:00:00Z",
+          source: source("calendar_event", "event-ada", "Ada workflow check-in"),
+        },
+      ],
+      candidatePrivateMemory: [
+        memory(
+          "memory-ada",
+          "preference",
+          "Ada prefers concise Friday updates.",
+          "contact:contact-ada",
+        ),
+        memory(
+          "memory-compiler",
+          "project_context",
+          "Compiler research is finance-sensitive.",
+          "project:project-compiler",
+        ),
+      ],
+      activeScope: { date: "2026-05-18" },
+    });
+
+    expect(packet.contacts.map((item) => item.id)).toEqual(["contact-ada"]);
+    expect(packet.emailThreads.map((item) => item.id)).toEqual(["thread-ada"]);
+    expect(packet.projects.map((item) => item.id)).toEqual(["project-analytics"]);
+    expect(packet.tasks.map((item) => item.id)).toEqual(["task-ada"]);
+    expect(packet.calendarEvents.map((item) => item.id)).toEqual(["event-ada"]);
+    expect(packet.privateMemory.map((item) => item.id)).toEqual(["memory-ada"]);
+    expect(JSON.stringify(packet)).not.toContain("contact-grace");
+    expect(JSON.stringify(packet)).not.toContain("thread-grace");
+    expect(JSON.stringify(packet)).not.toContain("project-compiler");
+    expect(packet.sources.find((item) => item.id === "contact-ada")).toMatchObject({
+      reason: "Contact token matched the request.",
+    });
+  });
+
+  it("degrades safely when a contact mention is ambiguous", () => {
+    const packet = resolveMe3AgentContextPacket({
+      id: "resolved-ambiguous",
+      generatedAt: "2026-05-16T10:00:00.000Z",
+      ownerId: "owner",
+      purpose: "chat_reply",
+      requestText: "Can you check Ada?",
+      candidateContacts: [
+        contact("contact-ada-lovelace", "Ada Lovelace", "client"),
+        contact("contact-ada-byron", "Ada Byron", "lead"),
+      ],
+      candidateEmailThreads: [
+        emailThread(
+          "thread-lovelace",
+          "Budget",
+          "Follow-up needed.",
+          "contact-ada-lovelace",
+          null,
+        ),
+      ],
+    });
+
+    expect(packet.contacts).toEqual([]);
+    expect(packet.emailThreads).toEqual([]);
+    expect(packet.warnings).toEqual([
+      'Ambiguous contact match for "Can you check Ada?"; no contact context was selected.',
+    ]);
+  });
+
+  it("uses active scopes even when the request text is sparse", () => {
+    const packet = resolveMe3AgentContextPacket({
+      id: "resolved-active",
+      generatedAt: "2026-05-16T10:00:00.000Z",
+      ownerId: "owner",
+      purpose: "assistant_job",
+      requestText: "Run the review.",
+      activeScope: {
+        emailThreadId: "thread-active",
+        projectId: "project-active",
+        date: "2026-05-18",
+      },
+      candidateContacts: [
+        contact("contact-active", "Mina Murray", "client"),
+        contact("contact-other", "Lucy Westenra", "lead"),
+      ],
+      candidateEmailThreads: [
+        emailThread(
+          "thread-active",
+          "Quiet subject",
+          "No obvious request tokens.",
+          "contact-active",
+          "project-active",
+        ),
+        emailThread(
+          "thread-other",
+          "Other subject",
+          "No obvious request tokens.",
+          "contact-other",
+          "project-other",
+        ),
+      ],
+      candidateProjects: [
+        project("project-active", "Client Review"),
+        project("project-other", "Other Review"),
+      ],
+      candidateTasks: [
+        task("task-active", "Prepare active review", "project-active"),
+        task("task-other", "Prepare other review", "project-other"),
+      ],
+      candidateCalendarEvents: [
+        {
+          id: "event-active",
+          title: "Client review",
+          startsAt: "2026-05-18T09:00:00Z",
+          source: source("calendar_event", "event-active", "Client review"),
+        },
+        {
+          id: "event-other",
+          title: "Other review",
+          startsAt: "2026-05-19T09:00:00Z",
+          source: source("calendar_event", "event-other", "Other review"),
+        },
+      ],
+    });
+
+    expect(packet.emailThreads.map((item) => item.id)).toEqual(["thread-active"]);
+    expect(packet.contacts.map((item) => item.id)).toEqual(["contact-active"]);
+    expect(packet.projects.map((item) => item.id)).toEqual(["project-active"]);
+    expect(packet.tasks.map((item) => item.id)).toEqual(["task-active"]);
+    expect(packet.calendarEvents.map((item) => item.id)).toEqual(["event-active"]);
+  });
+});
+
+function contact(
+  id: string,
+  name: string,
+  relationship: string,
+): Me3AgentContextContact {
+  return {
+    id,
+    name,
+    relationship,
+    summary: `${name} summary.`,
+    source: source("contact", id, name),
+  };
+}
+
+function emailThread(
+  id: string,
+  subject: string,
+  summary: string,
+  contactId: string | null,
+  projectId: string | null,
+): Me3AgentContextEmailThread {
+  return {
+    id,
+    subject,
+    summary,
+    contactId,
+    projectId,
+    source: source("email_thread", id, subject),
+  };
+}
+
+function project(id: string, name: string): Me3AgentContextProject {
+  return {
+    id,
+    name,
+    summary: `${name} summary.`,
+    source: source("project", id, name),
+  };
+}
+
+function task(
+  id: string,
+  title: string,
+  projectId: string,
+): Me3AgentContextTask {
+  return {
+    id,
+    title,
+    status: "open",
+    projectId,
+    source: source("task", id, title),
+  };
+}
+
+function memory(
+  id: string,
+  kind: string,
+  body: string,
+  scope: string,
+): Me3AgentContextPrivateMemory {
+  return {
+    id,
+    kind,
+    body,
+    scope,
+    source: source("private_memory", id, kind),
+  };
+}
+
+function source(
+  kind: Me3AgentContextSource["kind"],
+  id: string,
+  label: string,
+): Me3AgentContextSource {
+  return {
+    id,
+    kind,
+    label,
+    visibility:
+      kind === "owner_profile" || kind === "public_me_json" ? "public" : "private",
+  };
+}
