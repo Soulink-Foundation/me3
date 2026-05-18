@@ -15,7 +15,9 @@ const profileSite = computed(() =>
 );
 
 const sitesPath = computed(() =>
-  profileSite.value?.username ? `/sites/${profileSite.value.username}` : "/create",
+  profileSite.value?.username
+    ? `/sites/${profileSite.value.username}`
+    : "/create",
 );
 const isMobileViewport = ref(false);
 const mobileNavOpen = ref(false);
@@ -66,7 +68,9 @@ onBeforeUnmount(() => {
 });
 
 const isCalendar = computed(() => route.path.startsWith("/calendar"));
-const isMissionControl = computed(() => route.path.startsWith("/mission-control"));
+const isMissionControl = computed(() =>
+  route.path.startsWith("/mission-control"),
+);
 const isEmail = computed(() => route.path.startsWith("/email"));
 const isSites = computed(
   () => route.path.startsWith("/sites/") || route.path.startsWith("/create"),
@@ -182,16 +186,18 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
       </button>
 
       <RouterLink
-        :to="missionControlInstalled ? '/mission-control' : calendarInstalled ? '/calendar' : '/assistant'"
+        :to="
+          missionControlInstalled
+            ? '/mission-control'
+            : calendarInstalled
+              ? '/calendar'
+              : '/assistant'
+        "
         class="app-side-nav-mobile-bar__logo"
         aria-label="ME3"
         @click="closeMobileNav"
       >
-        <img
-          src="/me3-logo-light.png"
-          class="app-side-nav-mobile-bar__logo-img"
-          alt="me3"
-        />
+        <BrandLogo />
       </RouterLink>
 
       <div class="app-side-nav-mobile-bar__theme">
@@ -216,16 +222,18 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
       aria-label="App navigation"
     >
       <RouterLink
-        :to="missionControlInstalled ? '/mission-control' : calendarInstalled ? '/calendar' : '/assistant'"
+        :to="
+          missionControlInstalled
+            ? '/mission-control'
+            : calendarInstalled
+              ? '/calendar'
+              : '/assistant'
+        "
         class="app-side-nav__logo"
         aria-label="ME3"
         @click="closeMobileNav"
       >
-        <img
-          src="/me3-logo-light.png"
-          class="app-side-nav__logo-img"
-          alt="me3"
-        />
+        <BrandLogo />
       </RouterLink>
 
       <nav class="app-side-nav__links" aria-label="Primary">
@@ -553,6 +561,5 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
   .app-side-nav__links {
     padding-top: 4px;
   }
-
 }
 </style>
