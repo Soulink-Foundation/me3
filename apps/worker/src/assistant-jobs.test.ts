@@ -3,6 +3,7 @@ import {
   archiveAssistantJob,
   createAssistantJob,
   duplicateAssistantJob,
+  executeAssistantJobRun,
   getAssistantJob,
   listAssistantJobIngressEvents,
   listAssistantJobs,
@@ -18,6 +19,13 @@ import type { Env } from "./types";
 type JobRow = Record<string, unknown> & { id: string; user_id: string; status: string };
 type VersionRow = Record<string, unknown> & { id: string; job_id: string; user_id: string };
 type RunRow = Record<string, unknown> & { id: string; job_id: string; user_id: string };
+type ActionResultRow = Record<string, unknown> & {
+  id: string;
+  run_id: string;
+  action_id: string;
+  idempotency_key: string;
+  status: string;
+};
 type IngressRow = Record<string, unknown> & {
   id: string;
   user_id: string;
@@ -29,6 +37,8 @@ type AssistantJobsDbState = {
   jobs: JobRow[];
   versions: VersionRow[];
   runs: RunRow[];
+  actionResults: ActionResultRow[];
+  approvals: Record<string, unknown>[];
   events: Record<string, unknown>[];
   ingressEvents: IngressRow[];
   pluginActivities: Record<string, unknown>[];
@@ -61,8 +71,9 @@ describe("assistant jobs persistence", () => {
     expect(duplicated.job.name).toBe("Weekly Review copy");
 
     const run = await runAssistantJobNow(env, "owner", created.job.id);
-    expect(run.run.status).toBe("queued");
-    expect(run.execution).toBe("not_started");
+    expect(run.run.status).toBe("succeeded");
+    expect(run.execution).toBe("succeeded");
+    expect(run.actionResults).toHaveLength(5);
 
     await archiveAssistantJob(env, "owner", created.job.id);
     const afterArchive = await listAssistantJobs(env, "owner");
@@ -131,7 +142,7 @@ describe("assistant jobs persistence", () => {
     expect(queued.events.map((event) => event.id)).toEqual([recorded.event.id]);
   });
 
-  it("processes queued ingress events without running jobs yet", async () => {
+  it("processes queued ingress events through the runner", async () => {
     const env = createAssistantJobsEnv({ queue: true });
     const job = await createAssistantJob(env, "owner", {
       draft: eventJobDraft(),
@@ -158,6 +169,8 @@ describe("assistant jobs persistence", () => {
 
     expect(processed.outcome).toBe("matched");
     expect(processed.runCount).toBe(1);
+    expect(processed.executions || []).toHaveLength(1);
+    expect(processed.executions?.[0]?.execution).toBe("succeeded");
     expect(processed.event.status).toBe("matched");
     expect(processed.event.payload).toMatchObject({
       captureId: "capture-1",
@@ -170,8 +183,34 @@ describe("assistant jobs persistence", () => {
       jobId: job.job.id,
       triggerKind: "event",
       triggerRef: recorded.event.id,
-      status: "queued",
+      status: "succeeded",
     });
+  });
+
+  it("creates approval-gated action results without repeating side effects for the same run", async () => {
+    const env = createAssistantJobsEnv();
+    const created = await createAssistantJob(env, "owner", {
+      draft: approvalRequiredJobDraft(),
+      status: "active",
+    });
+
+    const first = await runAssistantJobNow(env, "owner", created.job.id);
+    const second = await executeAssistantJobRun(env, "owner", first.run.id);
+
+    expect(first.run.status).toBe("waiting_for_approval");
+    expect(first.execution).toBe("waiting_for_approval");
+    expect(first.actionResults).toEqual([
+      expect.objectContaining({
+        actionId: "activate-memory",
+        capabilityId: "mission.memory.activate",
+        status: "pending_approval",
+        approvalId: expect.any(String),
+      }),
+    ]);
+    expect(second.execution).toBe("already_finished");
+    expect(second.actionResults[0]?.approvalId).toBe(first.actionResults[0]?.approvalId);
+    expect(env.__state.approvals).toHaveLength(1);
+    expect(env.__state.actionResults).toHaveLength(1);
   });
 
   it("ignores ingress events that do not match active event jobs", async () => {
@@ -272,6 +311,32 @@ function eventJobDraft() {
   };
 }
 
+function approvalRequiredJobDraft() {
+  return {
+    ...eventJobDraft(),
+    name: "Approval Memory",
+    purpose: "Prepare a gated memory activation.",
+    trigger: { kind: "manual" },
+    actions: [
+      {
+        id: "activate-memory",
+        capabilityId: "mission.memory.activate",
+        label: "Activate memory",
+        inputs: { memoryId: "memory-1" },
+        approvalMode: "approval_required",
+        onFailure: "request_review",
+        idempotencyScope: "run",
+      },
+    ],
+    approvalPolicy: {
+      defaultMode: "none",
+      overrides: [],
+      ownerCanApproveFrom: "mission_control",
+      approvalExpiresAfterHours: null,
+    },
+  };
+}
+
 type AssistantJobsTestEnv = Env & { __state: AssistantJobsDbState };
 
 function createAssistantJobsEnv(options: { queue?: boolean } = {}): AssistantJobsTestEnv {
@@ -279,6 +344,8 @@ function createAssistantJobsEnv(options: { queue?: boolean } = {}): AssistantJob
     jobs: [],
     versions: [],
     runs: [],
+    actionResults: [],
+    approvals: [],
     events: [],
     ingressEvents: [],
     pluginActivities: [],
@@ -405,6 +472,47 @@ class FakeStatement {
       return { success: true };
     }
 
+    if (sql.includes("INSERT OR IGNORE INTO assistant_job_action_results")) {
+      const exists = this.state.actionResults.some(
+        (result) =>
+          result.run_id === values[1] &&
+          result.action_id === values[2] &&
+          result.idempotency_key === values[4],
+      );
+      if (!exists) {
+        this.state.actionResults.push({
+          id: values[0] as string,
+          run_id: values[1] as string,
+          action_id: values[2] as string,
+          capability_id: values[3] as string,
+          idempotency_key: values[4] as string,
+          status: values[5] as string,
+          approval_id: values[6] as string | null,
+          artifact_id: values[7] as string | null,
+          external_ref: values[8] as string | null,
+          error_message: values[9] as string | null,
+          created_at: values[10] as string,
+          updated_at: values[11] as string,
+        });
+      }
+      return { success: true };
+    }
+
+    if (sql.includes("INSERT INTO mission_approvals")) {
+      this.state.approvals.push({
+        id: values[0] as string,
+        user_id: values[1] as string,
+        plugin_id: values[2] as string,
+        action_id: values[3] as string,
+        title: values[4] as string,
+        summary: values[5] as string,
+        payload_json: values[6] as string,
+        risk_level: values[7] as string,
+        status: "pending",
+      });
+      return { success: true };
+    }
+
     if (sql.includes("INSERT INTO mission_plugin_activity")) {
       this.state.pluginActivities.push({
         id: values[0] as string,
@@ -449,6 +557,22 @@ class FakeStatement {
         event.status = values[0] as string;
         event.payload_json = values[1] as string;
         event.updated_at = new Date().toISOString();
+      }
+      return { success: true };
+    }
+
+    if (sql.includes("UPDATE assistant_job_runs")) {
+      const run = this.state.runs.find(
+        (candidate) => candidate.id === values[6] && candidate.user_id === values[7],
+      );
+      if (run) {
+        run.status = values[0] as string;
+        run.started_at = values[1] as string | null;
+        run.finished_at = values[2] as string | null;
+        run.output_preview = values[3] as string | null;
+        run.error_code = values[4] as string | null;
+        run.error_message = values[5] as string | null;
+        run.updated_at = new Date().toISOString();
       }
       return { success: true };
     }
@@ -503,6 +627,16 @@ class FakeStatement {
     }
     if (sql.includes("FROM assistant_job_ingress_events")) {
       return this.findIngressEvent(values[0], values[1]) as T | null;
+    }
+    if (sql.includes("FROM assistant_job_action_results")) {
+      return (
+        this.state.actionResults.find(
+          (result) =>
+            result.run_id === values[0] &&
+            result.action_id === values[1] &&
+            result.idempotency_key === values[2],
+        ) || null
+      ) as T | null;
     }
     if (sql.includes("FROM assistant_jobs")) {
       return (this.findJob(values[0], values[1]) || null) as T | null;
@@ -594,6 +728,11 @@ class FakeStatement {
             run.trigger_kind === "event" &&
             run.trigger_ref === values[1],
         ) as T[],
+      };
+    }
+    if (sql.includes("FROM assistant_job_action_results")) {
+      return {
+        results: this.state.actionResults.filter((result) => result.run_id === values[0]) as T[],
       };
     }
     if (sql.includes("FROM assistant_job_runs")) {

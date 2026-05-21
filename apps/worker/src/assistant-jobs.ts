@@ -2,8 +2,12 @@ import {
   ASSISTANT_JOB_CAPABILITIES,
   ASSISTANT_JOB_STARTER_RECIPES,
   createAssistantJobDraftFromRecipe,
+  getAssistantJobCapability,
   getAssistantJobStarterRecipe,
   validateAssistantJobDraft,
+  type AssistantJobAction,
+  type AssistantJobApprovalMode,
+  type AssistantCapability,
   type AssistantJobDraft,
   type AssistantJobDraftValidation,
   type AssistantJobStarterRecipe,
@@ -99,6 +103,30 @@ type AssistantJobRunRow = {
   created_at: string;
   updated_at: string;
 };
+
+type AssistantJobActionResultStatus =
+  | "skipped"
+  | "blocked"
+  | "pending_approval"
+  | "succeeded"
+  | "failed";
+
+type AssistantJobActionResultRow = {
+  id: string;
+  run_id: string;
+  action_id: string;
+  capability_id: string;
+  idempotency_key: string;
+  status: AssistantJobActionResultStatus;
+  approval_id: string | null;
+  artifact_id: string | null;
+  external_ref: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SerializedActionResult = ReturnType<typeof serializeActionResult>;
 
 type AssistantJobIngressEventRow = {
   id: string;
@@ -276,10 +304,17 @@ export async function processAssistantJobIngressQueueMessage(
       matchedRunCount: existingRuns.length,
       matchedJobIds: existingRuns.map((run) => run.job_id),
     });
+    const executions = [];
+    for (const run of existingRuns) {
+      if (run.status === "queued") {
+        executions.push(await executeAssistantJobRun(env, userId, run.id));
+      }
+    }
     return {
       event: serializeIngressEvent(matched),
       outcome: "already_matched",
       runCount: existingRuns.length,
+      executions,
     };
   }
 
@@ -306,7 +341,19 @@ export async function processAssistantJobIngressQueueMessage(
     matchedRunCount: runs.length,
     matchedJobIds: runs.map((run) => run.jobId),
   });
-  return { event: serializeIngressEvent(matched), outcome: "matched", runCount: runs.length, runs };
+  const executions = [];
+  for (const run of runs) {
+    if (run.status === "queued") {
+      executions.push(await executeAssistantJobRun(env, userId, run.id));
+    }
+  }
+  return {
+    event: serializeIngressEvent(matched),
+    outcome: "matched",
+    runCount: runs.length,
+    runs,
+    executions,
+  };
 }
 
 export async function markAssistantJobIngressQueueMessageFailed(
@@ -373,10 +420,116 @@ export async function getAssistantJob(env: Env, userId: string, jobId: string) {
   )
     .bind(userId, jobId)
     .all<AssistantJobRunRow>();
+  const serializedRuns = await Promise.all(
+    runs.results.map(async (run) => ({
+      ...serializeRun(run),
+      actionResults: await listAssistantJobActionResults(env, run.id),
+    })),
+  );
   return {
     job: serializeJob(job),
     version,
-    runs: runs.results.map(serializeRun),
+    runs: serializedRuns,
+  };
+}
+
+export async function executeAssistantJobRun(env: Env, userId: string, runId: string) {
+  const run = await requireAssistantJobRun(env, userId, runId);
+  if (run.status === "succeeded" || run.status === "waiting_for_approval") {
+    return {
+      run: serializeRun(run),
+      execution: "already_finished",
+      actionResults: await listAssistantJobActionResults(env, run.id),
+    };
+  }
+  if (run.status === "blocked" || run.status === "failed" || run.status === "cancelled") {
+    return {
+      run: serializeRun(run),
+      execution: "not_runnable",
+      actionResults: await listAssistantJobActionResults(env, run.id),
+    };
+  }
+
+  const job = await requireAssistantJob(env, userId, run.job_id);
+  const version = await requireAssistantJobVersion(env, userId, run.job_version_id);
+  const draft = draftFromVersion(job, version);
+  const validation = validateAssistantJobDraft(draft);
+  const now = new Date().toISOString();
+
+  if (validation.status !== "valid") {
+    await setAssistantJobRunStatus(env, userId, run.id, {
+      status: "blocked",
+      errorCode: "validation_blocked",
+      errorMessage: validation.errors[0]?.message || "Job is not ready to run",
+      finishedAt: now,
+      eventType: "blocked",
+      message: "Run blocked by validation",
+      payload: { validation },
+    });
+    return {
+      run: serializeRun(await requireAssistantJobRun(env, userId, run.id)),
+      execution: "blocked",
+      validation,
+      actionResults: await listAssistantJobActionResults(env, run.id),
+    };
+  }
+
+  await setAssistantJobRunStatus(env, userId, run.id, {
+    status: "running",
+    startedAt: run.started_at || now,
+    eventType: "running",
+    message: "Assistant Job runner started",
+    payload: {
+      triggerKind: run.trigger_kind,
+      triggerRef: run.trigger_ref,
+      actionCount: draft.actions.length,
+    },
+  });
+
+  const actionResults = [];
+  for (const action of draft.actions) {
+    actionResults.push(
+      await executeAssistantJobAction(env, {
+        userId,
+        job,
+        run,
+        draft,
+        action,
+      }),
+    );
+  }
+
+  const hasPendingApproval = actionResults.some((result) => result.status === "pending_approval");
+  const hasFailure = actionResults.some(
+    (result) => result.status === "failed" || result.status === "blocked",
+  );
+  const finalStatus: AssistantJobRunStatus = hasPendingApproval
+    ? "waiting_for_approval"
+    : hasFailure
+      ? "failed"
+      : "succeeded";
+  const finishedAt = finalStatus === "waiting_for_approval" ? null : new Date().toISOString();
+  await setAssistantJobRunStatus(env, userId, run.id, {
+    status: finalStatus,
+    finishedAt,
+    outputPreview: summarizeAssistantJobRunOutput(actionResults),
+    errorCode: hasFailure ? "action_failed" : null,
+    errorMessage: hasFailure ? "One or more Assistant Job actions failed" : null,
+    eventType: finalStatus,
+    message:
+      finalStatus === "waiting_for_approval"
+        ? "Assistant Job run is waiting for owner approval"
+        : finalStatus === "succeeded"
+          ? "Assistant Job run completed"
+          : "Assistant Job run failed",
+    payload: { actionResults },
+  });
+
+  return {
+    run: serializeRun(await requireAssistantJobRun(env, userId, run.id)),
+    execution: finalStatus,
+    validation,
+    actionResults,
   };
 }
 
@@ -587,10 +740,19 @@ export async function runAssistantJobNow(env: Env, userId: string, jobId: string
     ).bind(now, status, job.id, userId),
   ]);
 
+  if (status !== "queued") {
+    return {
+      run: serializeRun(await requireAssistantJobRun(env, userId, runId)),
+      validation,
+      execution: "not_started",
+      actionResults: await listAssistantJobActionResults(env, runId),
+    };
+  }
+
+  const execution = await executeAssistantJobRun(env, userId, runId);
   return {
-    run: serializeRun(await requireAssistantJobRun(env, userId, runId)),
+    ...execution,
     validation,
-    execution: "not_started",
   };
 }
 
@@ -647,6 +809,228 @@ async function createAssistantJobRunForEvent(
   ]);
 
   return serializeRun(await requireAssistantJobRun(env, event.user_id, runId));
+}
+
+async function executeAssistantJobAction(
+  env: Env,
+  input: {
+    userId: string;
+    job: AssistantJobRow;
+    run: AssistantJobRunRow;
+    draft: AssistantJobDraft;
+    action: AssistantJobAction;
+  },
+) {
+  const capability = getAssistantJobCapability(input.action.capabilityId);
+  const idempotencyKey = buildActionIdempotencyKey(input.run, input.action);
+  const existing = await getAssistantJobActionResult(
+    env,
+    input.run.id,
+    input.action.id,
+    idempotencyKey,
+  );
+  if (existing) return serializeActionResult(existing);
+
+  if (!capability) {
+    return insertAssistantJobActionResult(env, {
+      runId: input.run.id,
+      actionId: input.action.id,
+      capabilityId: input.action.capabilityId,
+      idempotencyKey,
+      status: "failed",
+      errorMessage: "Unknown Assistant Job capability",
+    });
+  }
+
+  const approvalMode = resolveActionApprovalMode(input.draft, input.action, capability);
+  if (approvalMode === "forbidden") {
+    return insertAssistantJobActionResult(env, {
+      runId: input.run.id,
+      actionId: input.action.id,
+      capabilityId: capability.id,
+      idempotencyKey,
+      status: "blocked",
+      errorMessage: "Capability is forbidden by Assistant Job policy",
+    });
+  }
+
+  if (approvalMode === "approval_required") {
+    const approvalId = await createAssistantJobActionApproval(env, input.userId, {
+      job: input.job,
+      run: input.run,
+      action: input.action,
+      capability,
+      idempotencyKey,
+    });
+    return insertAssistantJobActionResult(env, {
+      runId: input.run.id,
+      actionId: input.action.id,
+      capabilityId: capability.id,
+      idempotencyKey,
+      status: "pending_approval",
+      approvalId,
+    });
+  }
+
+  return insertAssistantJobActionResult(env, {
+    runId: input.run.id,
+    actionId: input.action.id,
+    capabilityId: capability.id,
+    idempotencyKey,
+    status: "succeeded",
+    externalRef: `${capability.auditEventKind}:${input.run.id}:${input.action.id}`,
+  });
+}
+
+async function createAssistantJobActionApproval(
+  env: Env,
+  userId: string,
+  input: {
+    job: AssistantJobRow;
+    run: AssistantJobRunRow;
+    action: AssistantJobAction;
+    capability: AssistantCapability;
+    idempotencyKey: string;
+  },
+) {
+  const approvalId = crypto.randomUUID();
+  const title = `Approve ${input.action.label}`;
+  await env.DB.prepare(
+    `INSERT INTO mission_approvals
+       (id, user_id, plugin_id, action_id, title, summary, payload_json, risk_level, requested_by, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'assistant_job', NULL)`,
+  )
+    .bind(
+      approvalId,
+      userId,
+      input.capability.pluginId || "me3.core",
+      input.action.id,
+      title,
+      `${input.job.name} wants to use ${input.capability.label}.`,
+      stringifyJson({
+        jobId: input.job.id,
+        runId: input.run.id,
+        actionId: input.action.id,
+        capabilityId: input.capability.id,
+        idempotencyKey: input.idempotencyKey,
+        inputs: input.action.inputs,
+      }),
+      riskLevelForCapability(input.capability),
+    )
+    .run();
+  return approvalId;
+}
+
+async function insertAssistantJobActionResult(
+  env: Env,
+  input: {
+    runId: string;
+    actionId: string;
+    capabilityId: string;
+    idempotencyKey: string;
+    status: AssistantJobActionResultStatus;
+    approvalId?: string | null;
+    artifactId?: string | null;
+    externalRef?: string | null;
+    errorMessage?: string | null;
+  },
+) {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO assistant_job_action_results
+       (id, run_id, action_id, capability_id, idempotency_key, status,
+        approval_id, artifact_id, external_ref, error_message, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      input.runId,
+      input.actionId,
+      input.capabilityId,
+      input.idempotencyKey,
+      input.status,
+      input.approvalId || null,
+      input.artifactId || null,
+      input.externalRef || null,
+      input.errorMessage || null,
+      now,
+      now,
+    )
+    .run();
+
+  const row = await getAssistantJobActionResult(
+    env,
+    input.runId,
+    input.actionId,
+    input.idempotencyKey,
+  );
+  if (!row) throw new AssistantJobsInputError("Assistant Job action result was not recorded", 409);
+  return serializeActionResult(row);
+}
+
+async function setAssistantJobRunStatus(
+  env: Env,
+  userId: string,
+  runId: string,
+  input: {
+    status: AssistantJobRunStatus;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    outputPreview?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    eventType: string;
+    message: string;
+    payload?: Record<string, unknown>;
+  },
+) {
+  const existing = await requireAssistantJobRun(env, userId, runId);
+  const startedAt =
+    input.startedAt !== undefined ? input.startedAt : existing.started_at;
+  const finishedAt =
+    input.finishedAt !== undefined ? input.finishedAt : existing.finished_at;
+  const outputPreview =
+    input.outputPreview !== undefined ? input.outputPreview : existing.output_preview;
+  const errorCode =
+    input.errorCode !== undefined ? input.errorCode : existing.error_code;
+  const errorMessage =
+    input.errorMessage !== undefined ? input.errorMessage : existing.error_message;
+  const now = new Date().toISOString();
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE assistant_job_runs
+       SET status = ?, started_at = ?, finished_at = ?, output_preview = ?,
+           error_code = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+    ).bind(
+      input.status,
+      startedAt,
+      finishedAt,
+      outputPreview,
+      errorCode,
+      errorMessage,
+      runId,
+      userId,
+    ),
+    env.DB.prepare(
+      `INSERT INTO assistant_job_run_events (id, run_id, event_type, message, payload_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      runId,
+      input.eventType,
+      input.message,
+      stringifyJson(input.payload || {}),
+      now,
+    ),
+    env.DB.prepare(
+      `UPDATE assistant_jobs
+       SET last_run_at = ?, last_run_status = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+    ).bind(now, input.status, existing.job_id, userId),
+  ]);
 }
 
 function normalizeAssistantJobDraft(body: CreateAssistantJobBody): AssistantJobDraft {
@@ -797,6 +1181,31 @@ async function requireAssistantJobRun(env: Env, userId: string, runId: string) {
     .first<AssistantJobRunRow>();
   if (!run) throw new AssistantJobsInputError("Assistant Job run not found", 404);
   return run;
+}
+
+async function getAssistantJobActionResult(
+  env: Env,
+  runId: string,
+  actionId: string,
+  idempotencyKey: string,
+) {
+  return env.DB.prepare(
+    `SELECT * FROM assistant_job_action_results
+     WHERE run_id = ? AND action_id = ? AND idempotency_key = ?`,
+  )
+    .bind(runId, actionId, idempotencyKey)
+    .first<AssistantJobActionResultRow>();
+}
+
+async function listAssistantJobActionResults(env: Env, runId: string) {
+  const rows = await env.DB.prepare(
+    `SELECT * FROM assistant_job_action_results
+     WHERE run_id = ?
+     ORDER BY created_at ASC`,
+  )
+    .bind(runId)
+    .all<AssistantJobActionResultRow>();
+  return rows.results.map(serializeActionResult);
 }
 
 async function listAssistantJobRunsForTrigger(env: Env, userId: string, triggerRef: string) {
@@ -1047,6 +1456,74 @@ function getValueAtPath(payload: Record<string, unknown>, path: string) {
   }, payload);
 }
 
+function resolveActionApprovalMode(
+  draft: AssistantJobDraft,
+  action: AssistantJobAction,
+  capability: AssistantCapability,
+): AssistantJobApprovalMode {
+  const override = draft.approvalPolicy.overrides.find(
+    (entry) => entry.capabilityId === capability.id,
+  )?.mode;
+  return strongestApprovalMode([
+    draft.approvalPolicy.defaultMode,
+    capability.approvalMode,
+    action.approvalMode,
+    override,
+  ]);
+}
+
+function strongestApprovalMode(modes: readonly (AssistantJobApprovalMode | undefined)[]) {
+  const order: Record<AssistantJobApprovalMode, number> = {
+    none: 0,
+    review_required: 1,
+    approval_required: 2,
+    forbidden: 3,
+  };
+  return modes.reduce<AssistantJobApprovalMode>((strongest, mode) => {
+    if (!mode) return strongest;
+    return order[mode] > order[strongest] ? mode : strongest;
+  }, "none");
+}
+
+function buildActionIdempotencyKey(run: AssistantJobRunRow, action: AssistantJobAction) {
+  if (action.idempotencyScope === "source_event" && run.trigger_ref) {
+    return `${run.user_id}:${run.job_id}:${action.id}:${run.trigger_ref}`;
+  }
+  return `${run.id}:${action.id}`;
+}
+
+function riskLevelForCapability(capability: AssistantCapability) {
+  if (
+    capability.sideEffect === "destructive" ||
+    capability.sideEffect === "money_or_account" ||
+    capability.sideEffect === "permission_change" ||
+    capability.sideEffect === "external_send" ||
+    capability.sideEffect === "public_publish"
+  ) {
+    return "high";
+  }
+  if (
+    capability.sideEffect === "external_write" ||
+    capability.sideEffect === "local_write" ||
+    capability.sideEffect === "local_shell" ||
+    capability.sideEffect === "memory_write"
+  ) {
+    return "medium";
+  }
+  return "low";
+}
+
+function summarizeAssistantJobRunOutput(actionResults: SerializedActionResult[]) {
+  const pending = actionResults.filter((result) => result.status === "pending_approval").length;
+  const succeeded = actionResults.filter((result) => result.status === "succeeded").length;
+  const failed = actionResults.filter(
+    (result) => result.status === "failed" || result.status === "blocked",
+  ).length;
+  if (pending > 0) return `${pending} action${pending === 1 ? "" : "s"} waiting for approval`;
+  if (failed > 0) return `${failed} action${failed === 1 ? "" : "s"} failed`;
+  return `${succeeded} action${succeeded === 1 ? "" : "s"} completed`;
+}
+
 function resolveInitialStatus(
   validation: AssistantJobDraftValidation,
   requestedStatus: AssistantJobStatus | null,
@@ -1133,6 +1610,23 @@ function serializeRun(row: AssistantJobRunRow) {
     errorMessage: row.error_message,
     retryCount: row.retry_count,
     nextRetryAt: row.next_retry_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function serializeActionResult(row: AssistantJobActionResultRow) {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    actionId: row.action_id,
+    capabilityId: row.capability_id,
+    idempotencyKey: row.idempotency_key,
+    status: row.status,
+    approvalId: row.approval_id,
+    artifactId: row.artifact_id,
+    externalRef: row.external_ref,
+    errorMessage: row.error_message,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
