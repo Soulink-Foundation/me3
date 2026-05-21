@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { api } from "../api";
-import ThemeToggle from "./ThemeToggle.vue";
+import BrandLogo from "./BrandLogo.vue";
 import UiIcon from "./UiIcon.vue";
 import { useSitesStore } from "../stores/sites";
 
@@ -185,24 +185,6 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
         />
       </button>
 
-      <RouterLink
-        :to="
-          missionControlInstalled
-            ? '/mission-control'
-            : calendarInstalled
-              ? '/calendar'
-              : '/assistant'
-        "
-        class="app-side-nav-mobile-bar__logo"
-        aria-label="ME3"
-        @click="closeMobileNav"
-      >
-        <BrandLogo class="app-side-nav-mobile-bar__logo-img" />
-      </RouterLink>
-
-      <div class="app-side-nav-mobile-bar__theme">
-        <ThemeToggle />
-      </div>
     </header>
 
     <button
@@ -323,10 +305,6 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
           <span class="app-side-nav__emoji" aria-hidden="true">⚙️</span>
           <span class="sr-only">Settings</span>
         </RouterLink>
-        <div class="app-side-nav__row app-side-nav__row--theme">
-          <ThemeToggle />
-          <span class="sr-only">Theme</span>
-        </div>
       </nav>
     </aside>
   </div>
@@ -422,15 +400,6 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
   color: var(--color-accent);
 }
 
-.app-side-nav__row--theme {
-  padding-left: 6px;
-  padding-right: 6px;
-}
-
-.app-side-nav__row--theme :deep(.theme-toggle) {
-  flex-shrink: 0;
-}
-
 .sr-only {
   position: absolute;
   width: 1px;
@@ -496,25 +465,6 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
     outline-offset: 2px;
   }
 
-  .app-side-nav-mobile-bar__logo {
-    display: none;
-    align-items: center;
-    justify-content: center;
-    min-width: 0;
-    text-decoration: none;
-  }
-
-  .app-side-nav-mobile-bar__theme {
-    display: none;
-  }
-
-  .app-side-nav-mobile-bar__logo-img {
-    display: block;
-    height: 18px;
-    width: auto;
-    max-width: 100%;
-  }
-
   .app-side-nav__backdrop {
     position: fixed;
     inset: 0;
@@ -549,13 +499,7 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
   }
 
   .app-side-nav__logo {
-    display: flex;
-    min-height: 44px;
-    margin-bottom: 10px;
-  }
-
-  .app-side-nav__row--theme {
-    display: flex;
+    display: none;
   }
 
   .app-side-nav__links {

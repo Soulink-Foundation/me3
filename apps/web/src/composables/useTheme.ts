@@ -1,14 +1,21 @@
 import { computed, ref } from "vue";
 
 export type ThemeMode = "light" | "dark";
+export type ThemePreference = "light" | "system" | "dark";
 
 const THEME_STORAGE_KEY = "me3-theme";
 const theme = ref<ThemeMode>("light");
+const themePreference = ref<ThemePreference>("system");
 
 let initialized = false;
+let systemThemeQuery: MediaQueryList | null = null;
 
 function isThemeMode(value: string | null): value is ThemeMode {
   return value === "light" || value === "dark";
+}
+
+function isThemePreference(value: string | null): value is ThemePreference {
+  return value === "light" || value === "system" || value === "dark";
 }
 
 function getSystemTheme(): ThemeMode {
@@ -18,7 +25,7 @@ function getSystemTheme(): ThemeMode {
     : "light";
 }
 
-function setStoredTheme(nextTheme: ThemeMode): void {
+function setStoredTheme(nextTheme: ThemePreference): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
@@ -27,32 +34,57 @@ function setStoredTheme(nextTheme: ThemeMode): void {
   }
 }
 
-function getStoredTheme(): ThemeMode | null {
-  if (typeof window === "undefined") return null;
+function getStoredTheme(): ThemePreference {
+  if (typeof window === "undefined") return "system";
   try {
     const value = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return isThemeMode(value) ? value : null;
+    if (isThemePreference(value)) return value;
+    if (isThemeMode(value)) return value;
+    return "system";
   } catch {
-    return null;
+    return "system";
   }
 }
 
-function applyTheme(nextTheme: ThemeMode): void {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  root.setAttribute("data-theme", nextTheme);
-  root.style.colorScheme = nextTheme;
+function applyTheme(nextTheme: ThemePreference): void {
+  const effectiveTheme = nextTheme === "system" ? getSystemTheme() : nextTheme;
+  theme.value = effectiveTheme;
+  themePreference.value = nextTheme;
+
+  if (typeof document !== "undefined") {
+    const root = document.documentElement;
+    if (nextTheme === "system") {
+      root.removeAttribute("data-theme");
+    } else {
+      root.setAttribute("data-theme", nextTheme);
+    }
+    root.style.colorScheme = effectiveTheme;
+  }
+}
+
+function syncSystemTheme() {
+  if (themePreference.value === "system") {
+    applyTheme("system");
+  }
 }
 
 function initTheme(): void {
   if (initialized) return;
-  theme.value = getStoredTheme() ?? getSystemTheme();
-  applyTheme(theme.value);
+  applyTheme(getStoredTheme());
+  if (typeof window !== "undefined") {
+    systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    systemThemeQuery.addEventListener("change", syncSystemTheme);
+  }
   initialized = true;
 }
 
 function setTheme(nextTheme: ThemeMode): void {
-  theme.value = nextTheme;
+  applyTheme(nextTheme);
+  setStoredTheme(nextTheme);
+  initialized = true;
+}
+
+function setThemePreference(nextTheme: ThemePreference): void {
   applyTheme(nextTheme);
   setStoredTheme(nextTheme);
   initialized = true;
@@ -65,9 +97,11 @@ function toggleTheme(): void {
 export function useTheme() {
   return {
     theme,
+    themePreference,
     isDark: computed(() => theme.value === "dark"),
     initTheme,
     setTheme,
+    setThemePreference,
     toggleTheme,
   };
 }

@@ -5,6 +5,10 @@ import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
 import CustomDomain from "../components/CustomDomain.vue";
 import TelegramConnectPanel from "../components/TelegramConnectPanel.vue";
+import {
+  useTheme,
+  type ThemePreference,
+} from "../composables/useTheme";
 import { useAuthStore } from "../stores/auth";
 import { useSitesStore } from "../stores/sites";
 import {
@@ -284,6 +288,7 @@ type AppConnectionsResponse = {
 
 const auth = useAuthStore();
 const sites = useSitesStore();
+const { themePreference, setThemePreference } = useTheme();
 const route = useRoute();
 const router = useRouter();
 
@@ -341,6 +346,7 @@ const telegramPanelRef = ref<InstanceType<typeof TelegramConnectPanel> | null>(
 
 const openSection = ref({
   email: true,
+  appearance: false,
   connections: false,
   regional: false,
   domain: false,
@@ -648,6 +654,38 @@ const me3ConnectionStatusLabel = computed(() => {
 const me3ConnectionStatusClass = computed(() =>
   me3Connection.value?.connected ? "active" : "pending_setup",
 );
+
+const themePreferenceLabel = computed(() => {
+  if (themePreference.value === "light") return "Light";
+  if (themePreference.value === "dark") return "Dark";
+  return "System";
+});
+
+const themeOptions: Array<{
+  value: ThemePreference;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "light",
+    label: "Light",
+    description: "Use the light interface.",
+  },
+  {
+    value: "system",
+    label: "System",
+    description: "Follow this device.",
+  },
+  {
+    value: "dark",
+    label: "Dark",
+    description: "Use the dark interface.",
+  },
+];
+
+function chooseThemePreference(nextTheme: ThemePreference) {
+  setThemePreference(nextTheme);
+}
 
 function syncAccount(response: AccountResponse) {
   auth.setSession({
@@ -1248,6 +1286,55 @@ onMounted(async () => {
               />
               <button class="button secondary" type="button" @click="logout">
                 Sign out
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card accordion-card">
+          <button
+            id="account-trigger-appearance"
+            class="accordion-trigger"
+            type="button"
+            :aria-expanded="openSection.appearance"
+            aria-controls="account-panel-appearance"
+            @click="openSection.appearance = !openSection.appearance"
+          >
+            <span class="accordion-title-wrap accordion-title-flex">
+              <h2>Appearance</h2>
+              <span class="accordion-header-hint">
+                {{ themePreferenceLabel }}
+              </span>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true">▼</span>
+          </button>
+          <div
+            id="account-panel-appearance"
+            class="accordion-panel"
+            role="region"
+            aria-labelledby="account-trigger-appearance"
+            :hidden="!openSection.appearance"
+          >
+            <div
+              class="theme-segmented"
+              role="radiogroup"
+              aria-label="Interface theme"
+            >
+              <button
+                v-for="option in themeOptions"
+                :key="option.value"
+                type="button"
+                class="theme-segmented__option"
+                :class="{
+                  'theme-segmented__option--active':
+                    themePreference === option.value,
+                }"
+                role="radio"
+                :aria-checked="themePreference === option.value"
+                @click="chooseThemePreference(option.value)"
+              >
+                <span>{{ option.label }}</span>
+                <small>{{ option.description }}</small>
               </button>
             </div>
           </div>
@@ -2272,6 +2359,71 @@ h1 {
   gap: 16px;
 }
 
+.theme-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--ui-border, var(--color-border));
+  border-radius: var(--ui-radius-md, 12px);
+  background: var(--ui-surface-muted, var(--color-bg-subtle));
+}
+
+.theme-segmented__option {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  min-height: 58px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius-sm, 8px);
+  background: transparent;
+  color: var(--ui-text-muted, var(--color-text-muted));
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.theme-segmented__option:hover,
+.theme-segmented__option:focus-visible {
+  background: var(--ui-surface, var(--color-bg));
+  color: var(--ui-text, var(--color-text));
+}
+
+.theme-segmented__option:focus-visible {
+  outline: 2px solid var(--ui-accent, var(--color-accent));
+  outline-offset: 2px;
+}
+
+.theme-segmented__option--active {
+  border-color: color-mix(
+    in oklab,
+    var(--ui-accent, var(--color-accent)) 38%,
+    var(--ui-border, var(--color-border))
+  );
+  background: var(--ui-surface, var(--color-bg));
+  color: var(--ui-text, var(--color-text));
+  box-shadow: var(--ui-shadow-sm, var(--shadow-soft));
+}
+
+.theme-segmented__option span {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.theme-segmented__option small {
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.25;
+  opacity: 0.76;
+}
+
 .field-hint {
   margin: 6px 0 0;
   color: var(--color-text-muted);
@@ -2924,6 +3076,10 @@ h1 {
   }
 
   .ai-route-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .theme-segmented {
     grid-template-columns: 1fr;
   }
 
