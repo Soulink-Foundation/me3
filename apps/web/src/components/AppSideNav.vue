@@ -197,7 +197,7 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
         aria-label="ME3"
         @click="closeMobileNav"
       >
-        <BrandLogo />
+        <BrandLogo class="app-side-nav-mobile-bar__logo-img" />
       </RouterLink>
 
       <div class="app-side-nav-mobile-bar__theme">
@@ -233,7 +233,7 @@ watch([showMobileDrawer, isMobileViewport], ([isOpen, isMobile]) => {
         aria-label="ME3"
         @click="closeMobileNav"
       >
-        <BrandLogo />
+        <BrandLogo class="app-side-nav__logo-img" />
       </RouterLink>
 
       <nav class="app-side-nav__links" aria-label="Primary">
