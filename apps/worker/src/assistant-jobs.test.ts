@@ -34,11 +34,19 @@ type IngressRow = Record<string, unknown> & {
 };
 
 type AssistantJobsDbState = {
+  owner: Record<string, unknown> | null;
   jobs: JobRow[];
   versions: VersionRow[];
   runs: RunRow[];
   actionResults: ActionResultRow[];
   approvals: Record<string, unknown>[];
+  missionAgentRuns: Record<string, unknown>[];
+  projects: Record<string, unknown>[];
+  tasks: Record<string, unknown>[];
+  memory: Record<string, unknown>[];
+  calendarEvents: Record<string, unknown>[];
+  recentMessages: Record<string, unknown>[];
+  failMemoryLookup?: boolean;
   events: Record<string, unknown>[];
   ingressEvents: IngressRow[];
   pluginActivities: Record<string, unknown>[];
@@ -74,6 +82,18 @@ describe("assistant jobs persistence", () => {
     expect(run.run.status).toBe("succeeded");
     expect(run.execution).toBe("succeeded");
     expect(run.actionResults).toHaveLength(5);
+    expect(env.__state.missionAgentRuns[0]).toMatchObject({
+      source: "core",
+      status: "succeeded",
+      runner_id: "assistant-jobs",
+    });
+    expect(JSON.parse(env.__state.missionAgentRuns[0]?.result_json as string)).toMatchObject({
+      assistantJobRunId: run.run.id,
+      contextPacketId: `agent-context:owner:job-run:${run.run.id}`,
+      contextManifest: {
+        packetId: `agent-context:owner:job-run:${run.run.id}`,
+      },
+    });
 
     await archiveAssistantJob(env, "owner", created.job.id);
     const afterArchive = await listAssistantJobs(env, "owner");
@@ -213,6 +233,49 @@ describe("assistant jobs persistence", () => {
     expect(env.__state.actionResults).toHaveLength(1);
   });
 
+  it("persists scoped context manifests and failed source markers for job runs", async () => {
+    const env = createAssistantJobsEnv({
+      failMemoryLookup: true,
+      projects: [
+        projectRow("project-1", "Launch Project"),
+        projectRow("project-2", "Unrelated Project"),
+      ],
+      tasks: [
+        taskRow("task-1", "Ship launch notes", "project-1"),
+        taskRow("task-2", "Ignore unrelated", "project-2"),
+      ],
+    });
+    const created = await createAssistantJob(env, "owner", {
+      draft: { ...eventJobDraft(), projectId: "project-1" },
+      projectId: "project-1",
+      status: "active",
+    });
+
+    const run = await runAssistantJobNow(env, "owner", created.job.id);
+    const result = JSON.parse(env.__state.missionAgentRuns[0]?.result_json as string) as {
+      contextManifest: {
+        sources: Array<{ id: string; kind: string; status: string }>;
+      };
+    };
+
+    expect(run.run.status).toBe("succeeded");
+    expect(result.contextManifest.sources).toContainEqual(
+      expect.objectContaining({ id: "project-1", kind: "project", status: "included" }),
+    );
+    expect(result.contextManifest.sources).toContainEqual(
+      expect.objectContaining({ id: "task-1", kind: "task", status: "included" }),
+    );
+    expect(result.contextManifest.sources).toContainEqual(
+      expect.objectContaining({ id: "mission-memory", kind: "private_memory", status: "failed" }),
+    );
+    expect(result.contextManifest.sources).not.toContainEqual(
+      expect.objectContaining({ id: "project-2" }),
+    );
+    expect(result.contextManifest.sources).not.toContainEqual(
+      expect.objectContaining({ id: "task-2" }),
+    );
+  });
+
   it("ignores ingress events that do not match active event jobs", async () => {
     const env = createAssistantJobsEnv();
 
@@ -339,17 +402,34 @@ function approvalRequiredJobDraft() {
 
 type AssistantJobsTestEnv = Env & { __state: AssistantJobsDbState };
 
-function createAssistantJobsEnv(options: { queue?: boolean } = {}): AssistantJobsTestEnv {
+type AssistantJobsEnvOptions = Partial<AssistantJobsDbState> & { queue?: boolean };
+
+function createAssistantJobsEnv(options: AssistantJobsEnvOptions = {}): AssistantJobsTestEnv {
+  const { queue: useQueue = false, ...stateOverrides } = options;
   const state: AssistantJobsDbState = {
+    owner: {
+      id: "owner",
+      name: "Kieran",
+      username: "kieran",
+      bio: "Builds useful agentic products.",
+      timezone: "Europe/Dublin",
+    },
     jobs: [],
     versions: [],
     runs: [],
     actionResults: [],
     approvals: [],
+    missionAgentRuns: [],
+    projects: [],
+    tasks: [],
+    memory: [],
+    calendarEvents: [],
+    recentMessages: [],
     events: [],
     ingressEvents: [],
     pluginActivities: [],
     queueMessages: [],
+    ...stateOverrides,
   };
 
   const db = {
@@ -373,8 +453,36 @@ function createAssistantJobsEnv(options: { queue?: boolean } = {}): AssistantJob
 
   return {
     DB: db as unknown as D1Database,
-    ASSISTANT_JOB_EVENTS: options.queue ? (queue as unknown as Queue) : undefined,
+    ASSISTANT_JOB_EVENTS: useQueue ? (queue as unknown as Queue) : undefined,
     __state: state,
+  };
+}
+
+function projectRow(id: string, name: string) {
+  return {
+    id,
+    user_id: "owner",
+    name,
+    slug: name.toLowerCase().replaceAll(" ", "-"),
+    description: `${name} description`,
+    status: "active",
+    source_ref: null,
+    updated_at: "2026-05-21T08:00:00.000Z",
+  };
+}
+
+function taskRow(id: string, title: string, projectId: string) {
+  return {
+    id,
+    user_id: "owner",
+    project_id: projectId,
+    title,
+    description: null,
+    status: "todo",
+    due_at: null,
+    scheduled_for: null,
+    source_ref: null,
+    updated_at: "2026-05-21T08:00:00.000Z",
   };
 }
 
@@ -513,6 +621,30 @@ class FakeStatement {
       return { success: true };
     }
 
+    if (sql.includes("INSERT INTO mission_agent_runs")) {
+      const existing = this.state.missionAgentRuns.find((run) => run.id === values[0]);
+      const row = {
+        id: values[0] as string,
+        user_id: values[1] as string,
+        source: "core",
+        project_id: values[2] as string | null,
+        title: values[3] as string,
+        prompt_summary: values[4] as string,
+        status: values[5] as string,
+        model: "structured-assistant-job-runner-v1",
+        runner_id: "assistant-jobs",
+        started_at: values[6] as string | null,
+        finished_at: values[7] as string | null,
+        result_json: values[8] as string,
+        artifact_manifest_json: "[]",
+        created_at: values[9] as string,
+        updated_at: values[10] as string,
+      };
+      if (existing) Object.assign(existing, row);
+      else this.state.missionAgentRuns.push(row);
+      return { success: true };
+    }
+
     if (sql.includes("INSERT INTO mission_plugin_activity")) {
       this.state.pluginActivities.push({
         id: values[0] as string,
@@ -618,6 +750,9 @@ class FakeStatement {
   async first<T>() {
     const sql = this.sql;
     const values = this.values;
+    if (sql.includes("FROM owner_profile")) {
+      return (this.state.owner?.id === values[0] ? this.state.owner : null) as T | null;
+    }
     if (sql.includes("FROM assistant_job_ingress_events") && sql.includes("idempotency_key")) {
       return (
         this.state.ingressEvents.find(
@@ -659,6 +794,42 @@ class FakeStatement {
   async all<T>() {
     const sql = this.sql;
     const values = this.values;
+    if (sql.includes("FROM mission_projects")) {
+      return {
+        results: this.state.projects.filter(
+          (project) => project.user_id === values[0] && project.status !== "archived",
+        ) as T[],
+      };
+    }
+    if (sql.includes("FROM mission_tasks")) {
+      return {
+        results: this.state.tasks.filter(
+          (task) =>
+            task.user_id === values[0] &&
+            task.archived_at == null &&
+            task.status !== "done" &&
+            task.status !== "cancelled",
+        ) as T[],
+      };
+    }
+    if (sql.includes("FROM mission_private_memory")) {
+      if (this.state.failMemoryLookup) throw new Error("mission_private_memory unavailable");
+      return {
+        results: this.state.memory.filter(
+          (memory) => memory.user_id === values[0] && memory.review_status === "active",
+        ) as T[],
+      };
+    }
+    if (sql.includes("FROM user_calendar_events")) {
+      return {
+        results: this.state.calendarEvents.filter((event) => event.user_id === values[0]) as T[],
+      };
+    }
+    if (sql.includes("FROM assistant_messages")) {
+      return {
+        results: this.state.recentMessages.filter((message) => message.owner_id === values[0]) as T[],
+      };
+    }
     if (sql.includes("FROM assistant_jobs j")) {
       return {
         results: this.state.jobs

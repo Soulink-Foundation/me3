@@ -1,6 +1,8 @@
 import {
   ASSISTANT_JOB_CAPABILITIES,
   ASSISTANT_JOB_STARTER_RECIPES,
+  attachAssistantJobContextToRunResult,
+  createAssistantJobContext,
   createAssistantJobDraftFromRecipe,
   getAssistantJobCapability,
   getAssistantJobStarterRecipe,
@@ -11,7 +13,16 @@ import {
   type AssistantJobDraft,
   type AssistantJobDraftValidation,
   type AssistantJobStarterRecipe,
+  type AssistantJobContextResult,
 } from "@me3-core/assistant-jobs";
+import type {
+  Me3AgentContextCalendarEvent,
+  Me3AgentContextPrivateMemory,
+  Me3AgentContextProject,
+  Me3AgentContextRecentMessage,
+  Me3AgentContextSource,
+  Me3AgentContextTask,
+} from "@me3/knowledge";
 import type { AssistantJobEventQueueMessage, Env } from "./types";
 
 export class AssistantJobsInputError extends Error {
@@ -127,6 +138,66 @@ type AssistantJobActionResultRow = {
 };
 
 type SerializedActionResult = ReturnType<typeof serializeActionResult>;
+
+type OwnerProfileContextRow = {
+  id: string;
+  name: string | null;
+  username: string | null;
+  bio: string | null;
+  timezone: string | null;
+};
+
+type MissionProjectContextRow = {
+  id: string;
+  name: string;
+  slug: string | null;
+  description: string | null;
+  status: string;
+  source_ref: string | null;
+  updated_at: string;
+};
+
+type MissionTaskContextRow = {
+  id: string;
+  project_id: string | null;
+  title: string;
+  description: string | null;
+  status: string;
+  due_at: string | null;
+  scheduled_for: string | null;
+  source_ref: string | null;
+  updated_at: string;
+};
+
+type MissionMemoryContextRow = {
+  id: string;
+  memory_kind: string;
+  scope_kind: string;
+  scope_id: string | null;
+  title: string | null;
+  body: string;
+  confidence: number | null;
+  source_ref: string | null;
+  updated_at: string;
+};
+
+type CalendarEventContextRow = {
+  id: string;
+  title: string;
+  notes: string | null;
+  starts_at: string;
+  ends_at: string;
+  timezone: string | null;
+  created_at: string;
+  updated_at: string | null;
+};
+
+type AssistantMessageContextRow = {
+  id?: string | null;
+  role: "user" | "assistant" | "system";
+  content: string;
+  created_at?: string | null;
+};
 
 type AssistantJobIngressEventRow = {
   id: string;
@@ -455,6 +526,7 @@ export async function executeAssistantJobRun(env: Env, userId: string, runId: st
   const draft = draftFromVersion(job, version);
   const validation = validateAssistantJobDraft(draft);
   const now = new Date().toISOString();
+  const context = await loadAssistantJobRunContext(env, userId, { job, run, draft });
 
   if (validation.status !== "valid") {
     await setAssistantJobRunStatus(env, userId, run.id, {
@@ -484,6 +556,14 @@ export async function executeAssistantJobRun(env: Env, userId: string, runId: st
       triggerRef: run.trigger_ref,
       actionCount: draft.actions.length,
     },
+  });
+  await upsertAssistantJobMissionAgentRun(env, userId, {
+    job,
+    run,
+    draft,
+    status: "running",
+    startedAt: run.started_at || now,
+    context,
   });
 
   const actionResults = [];
@@ -523,6 +603,17 @@ export async function executeAssistantJobRun(env: Env, userId: string, runId: st
           ? "Assistant Job run completed"
           : "Assistant Job run failed",
     payload: { actionResults },
+  });
+  await upsertAssistantJobMissionAgentRun(env, userId, {
+    job,
+    run: await requireAssistantJobRun(env, userId, run.id),
+    draft,
+    status: finalStatus === "failed" ? "failed" : finalStatus === "succeeded" ? "succeeded" : "running",
+    startedAt: run.started_at || now,
+    finishedAt,
+    context,
+    actionResults,
+    outputPreview: summarizeAssistantJobRunOutput(actionResults),
   });
 
   return {
@@ -1033,6 +1124,125 @@ async function setAssistantJobRunStatus(
   ]);
 }
 
+async function loadAssistantJobRunContext(
+  env: Env,
+  userId: string,
+  input: {
+    job: AssistantJobRow;
+    run: AssistantJobRunRow;
+    draft: AssistantJobDraft;
+  },
+): Promise<AssistantJobContextResult | null> {
+  const failedSources: Me3AgentContextSource[] = [];
+  try {
+    const owner = await loadAssistantJobOwnerContext(env, userId, failedSources);
+    const [projects, tasks, calendarEvents, privateMemory, recentMessages] = await Promise.all([
+      loadAssistantJobProjectsContext(env, userId, failedSources),
+      loadAssistantJobTasksContext(env, userId, failedSources),
+      loadAssistantJobCalendarContext(env, userId, failedSources),
+      loadAssistantJobMemoryContext(env, userId, failedSources),
+      loadAssistantJobRecentMessagesContext(env, userId, failedSources),
+    ]);
+    const projectId =
+      input.draft.destination.projectId || input.draft.scope.projectId || input.job.project_id;
+
+    return createAssistantJobContext({
+      ownerId: userId,
+      jobId: input.job.id,
+      runId: input.run.id,
+      jobName: input.job.name,
+      jobPurpose: input.job.purpose,
+      trigger: input.draft.trigger,
+      scope: input.draft.scope,
+      destination: input.draft.destination,
+      ownerProfile: owner,
+      candidateProjects: projectId
+        ? projects.filter((project) => project.id === projectId)
+        : projects,
+      candidateTasks: projectId
+        ? tasks.filter((task) => task.projectId === projectId)
+        : tasks,
+      candidateCalendarEvents: calendarEvents,
+      candidatePrivateMemory: privateMemory,
+      candidateRecentMessages: recentMessages,
+      failedSources,
+      budget: { maxPromptChars: 6000 },
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function upsertAssistantJobMissionAgentRun(
+  env: Env,
+  userId: string,
+  input: {
+    job: AssistantJobRow;
+    run: AssistantJobRunRow;
+    draft: AssistantJobDraft;
+    status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    context: AssistantJobContextResult | null;
+    actionResults?: SerializedActionResult[];
+    outputPreview?: string | null;
+  },
+) {
+  const id = missionAgentRunIdForAssistantJobRun(input.run.id);
+  const result = input.context
+    ? attachAssistantJobContextToRunResult(
+        {
+          assistantJobRunId: input.run.id,
+          assistantJobId: input.job.id,
+          assistantJobStatus: input.run.status,
+          outputPreview: input.outputPreview || input.run.output_preview || null,
+          actionResults: input.actionResults || [],
+        },
+        input.context,
+      )
+    : {
+        assistantJobRunId: input.run.id,
+        assistantJobId: input.job.id,
+        assistantJobStatus: input.run.status,
+        outputPreview: input.outputPreview || input.run.output_preview || null,
+        actionResults: input.actionResults || [],
+        contextPacketId: null,
+        contextManifest: null,
+      };
+  const promptSummary = input.context?.prompt.text.slice(0, 2000) || input.job.purpose;
+  const projectId = input.draft.destination.projectId || input.draft.scope.projectId || input.job.project_id;
+  const now = new Date().toISOString();
+
+  await env.DB.prepare(
+    `INSERT INTO mission_agent_runs
+       (id, user_id, source, project_id, title, prompt_summary, status, model,
+        runner_id, started_at, finished_at, result_json, artifact_manifest_json, created_at, updated_at)
+     VALUES (?, ?, 'core', ?, ?, ?, ?, 'structured-assistant-job-runner-v1',
+             'assistant-jobs', ?, ?, ?, '[]', ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       status = excluded.status,
+       prompt_summary = excluded.prompt_summary,
+       started_at = COALESCE(mission_agent_runs.started_at, excluded.started_at),
+       finished_at = excluded.finished_at,
+       result_json = excluded.result_json,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(
+      id,
+      userId,
+      projectId,
+      `Assistant Job: ${input.job.name}`,
+      promptSummary,
+      input.status,
+      input.startedAt || null,
+      input.finishedAt || null,
+      stringifyJson(result),
+      now,
+      now,
+    )
+    .run();
+}
+
 function normalizeAssistantJobDraft(body: CreateAssistantJobBody): AssistantJobDraft {
   const rawDraft = body.draft;
   const recipeId = normalizeOptionalText(body.recipeId);
@@ -1251,6 +1461,219 @@ async function listEventTriggerCandidates(env: Env, userId: string) {
     .bind(userId)
     .all<AssistantJobMatchCandidateRow>();
   return rows.results;
+}
+
+async function loadAssistantJobOwnerContext(
+  env: Env,
+  userId: string,
+  failedSources: Me3AgentContextSource[],
+) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT id, name, username, bio, timezone FROM owner_profile WHERE id = ?",
+    )
+      .bind(userId)
+      .first<OwnerProfileContextRow>();
+    if (!row) return null;
+    return {
+      displayName: row.name,
+      username: row.username,
+      bio: row.bio,
+      timezone: row.timezone,
+      source: contextSource({
+        id: row.id,
+        kind: "owner_profile",
+        label: "Owner profile",
+        visibility: "public",
+        reason: "Always include a small owner profile.",
+      }),
+    };
+  } catch {
+    failedSources.push(failedContextSource("owner-profile", "owner_profile", "Owner profile"));
+    return null;
+  }
+}
+
+async function loadAssistantJobProjectsContext(
+  env: Env,
+  userId: string,
+  failedSources: Me3AgentContextSource[],
+): Promise<Me3AgentContextProject[]> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id, name, slug, description, status, source_ref, updated_at
+       FROM mission_projects
+       WHERE user_id = ? AND status != 'archived'
+       ORDER BY updated_at DESC
+       LIMIT 30`,
+    )
+      .bind(userId)
+      .all<MissionProjectContextRow>();
+    return (rows.results || []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      aliases: [row.slug].filter((value): value is string => Boolean(value)),
+      summary: row.description,
+      status: row.status,
+      source: contextSource({
+        id: row.id,
+        kind: "project",
+        label: row.name,
+        visibility: "private",
+        sourceRef: row.source_ref,
+        updatedAt: row.updated_at,
+      }),
+    }));
+  } catch {
+    failedSources.push(failedContextSource("mission-projects", "project", "Mission projects"));
+    return [];
+  }
+}
+
+async function loadAssistantJobTasksContext(
+  env: Env,
+  userId: string,
+  failedSources: Me3AgentContextSource[],
+): Promise<Me3AgentContextTask[]> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id, project_id, title, description, status, due_at, scheduled_for,
+              source_ref, updated_at
+       FROM mission_tasks
+       WHERE user_id = ?
+         AND archived_at IS NULL
+         AND status NOT IN ('done', 'cancelled')
+       ORDER BY priority ASC, COALESCE(due_at, scheduled_for, updated_at) ASC
+       LIMIT 50`,
+    )
+      .bind(userId)
+      .all<MissionTaskContextRow>();
+    return (rows.results || []).map((row) => ({
+      id: row.id,
+      title: row.description ? `${row.title}: ${row.description}` : row.title,
+      status: row.status,
+      dueAt: row.due_at || row.scheduled_for,
+      projectId: row.project_id,
+      source: contextSource({
+        id: row.id,
+        kind: "task",
+        label: row.title,
+        visibility: "private",
+        sourceRef: row.source_ref,
+        updatedAt: row.updated_at,
+      }),
+    }));
+  } catch {
+    failedSources.push(failedContextSource("mission-tasks", "task", "Mission tasks"));
+    return [];
+  }
+}
+
+async function loadAssistantJobMemoryContext(
+  env: Env,
+  userId: string,
+  failedSources: Me3AgentContextSource[],
+): Promise<Me3AgentContextPrivateMemory[]> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id, memory_kind, scope_kind, scope_id, title, body, confidence,
+              source_ref, updated_at
+       FROM mission_private_memory
+       WHERE user_id = ? AND review_status = 'active'
+       ORDER BY updated_at DESC
+       LIMIT 40`,
+    )
+      .bind(userId)
+      .all<MissionMemoryContextRow>();
+    return (rows.results || []).map((row) => ({
+      id: row.id,
+      kind: row.memory_kind,
+      title: row.title,
+      body: row.body,
+      scope: row.scope_id ? `${row.scope_kind}:${row.scope_id}` : row.scope_kind,
+      confidence: row.confidence,
+      source: contextSource({
+        id: row.id,
+        kind: "private_memory",
+        label: row.title || row.memory_kind,
+        visibility: "private",
+        sourceRef: row.source_ref,
+        updatedAt: row.updated_at,
+      }),
+    }));
+  } catch {
+    failedSources.push(failedContextSource("mission-memory", "private_memory", "Private memory"));
+    return [];
+  }
+}
+
+async function loadAssistantJobCalendarContext(
+  env: Env,
+  userId: string,
+  failedSources: Me3AgentContextSource[],
+): Promise<Me3AgentContextCalendarEvent[]> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id, title, notes, starts_at, ends_at, timezone, created_at, updated_at
+       FROM user_calendar_events
+       WHERE user_id = ?
+       ORDER BY starts_at ASC
+       LIMIT 30`,
+    )
+      .bind(userId)
+      .all<CalendarEventContextRow>();
+    return (rows.results || []).map((row) => ({
+      id: row.id,
+      title: row.notes ? `${row.title}: ${row.notes}` : row.title,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      timezone: row.timezone,
+      source: contextSource({
+        id: row.id,
+        kind: "calendar_event",
+        label: row.title,
+        visibility: "private",
+        updatedAt: row.updated_at || row.created_at,
+      }),
+    }));
+  } catch {
+    failedSources.push(failedContextSource("calendar-events", "calendar_event", "Calendar events"));
+    return [];
+  }
+}
+
+async function loadAssistantJobRecentMessagesContext(
+  env: Env,
+  userId: string,
+  failedSources: Me3AgentContextSource[],
+): Promise<Me3AgentContextRecentMessage[]> {
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT id, role, content, created_at
+       FROM assistant_messages
+       WHERE owner_id = ?
+       ORDER BY created_at DESC
+       LIMIT 12`,
+    )
+      .bind(userId)
+      .all<AssistantMessageContextRow>();
+    return (rows.results || []).map((row, index) => ({
+      id: row.id || `recent-${index + 1}`,
+      role: row.role,
+      content: row.content,
+      createdAt: row.created_at || null,
+      source: contextSource({
+        id: row.id || `recent-${index + 1}`,
+        kind: "assistant_message",
+        label: "Recent chat",
+        visibility: "private",
+        updatedAt: row.created_at || null,
+      }),
+    }));
+  } catch {
+    failedSources.push(failedContextSource("assistant-messages", "assistant_message", "Recent chat"));
+    return [];
+  }
 }
 
 async function getAssistantJobIngressEventByIdempotencyKey(
@@ -1511,6 +1934,47 @@ function riskLevelForCapability(capability: AssistantCapability) {
     return "medium";
   }
   return "low";
+}
+
+function missionAgentRunIdForAssistantJobRun(runId: string) {
+  return `assistant-job-run:${runId}`;
+}
+
+function contextSource(input: {
+  id: string;
+  kind: Me3AgentContextSource["kind"];
+  label: string;
+  visibility: Me3AgentContextSource["visibility"];
+  status?: Me3AgentContextSource["status"];
+  reason?: string;
+  sourceRef?: string | null;
+  updatedAt?: string | null;
+}): Me3AgentContextSource {
+  return {
+    id: input.id,
+    kind: input.kind,
+    label: input.label,
+    visibility: input.visibility,
+    status: input.status,
+    reason: input.reason,
+    sourceRef: input.sourceRef ?? null,
+    updatedAt: input.updatedAt ?? null,
+  };
+}
+
+function failedContextSource(
+  id: string,
+  kind: Me3AgentContextSource["kind"],
+  label: string,
+): Me3AgentContextSource {
+  return contextSource({
+    id,
+    kind,
+    label,
+    visibility: "private",
+    status: "failed",
+    reason: "Context lookup failed.",
+  });
 }
 
 function summarizeAssistantJobRunOutput(actionResults: SerializedActionResult[]) {
